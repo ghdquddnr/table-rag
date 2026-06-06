@@ -1,0 +1,10 @@
+{"id": "q01", "question": "영업이익이 37억원인 분기의 IT 부문 매출은?", "expected_contains": "37", "source_chunk_id": 3, "chunk_type": "table", "note": "37은 손익표에만 있음. 질문에 37 포함 → lexical_token=37 → word_similarity로 chunk3 직접 매칭"}
+{"id": "q02", "question": "부채비율 44.3%를 기록한 시점의 자산총계는?", "expected_contains": "44.3%", "source_chunk_id": 2, "chunk_type": "table", "note": "44.3%는 재무상태표에만 있음. lexical_token=44.3% → chunk2 word_similarity=1.0"}
+{"id": "q03", "question": "수주잔고가 0.70조원인 분기 다음 분기 수주잔고는?", "expected_contains": "0.70", "source_chunk_id": 1, "chunk_type": "table", "note": "0.70은 수주잔고 표에만 있음. lexical_token=0.70 → chunk1 word_similarity=1.0"}
+{"id": "q04", "question": "영업이익률 1.5%인 분기의 당기순이익은?", "expected_contains": "1.5%", "source_chunk_id": 3, "chunk_type": "table", "note": "1.5%는 손익표에만 있음. pg_trgm word_similarity 핵심 케이스"}
+{"id": "q05", "question": "자산총계 8,084억원 분기의 자본총계는?", "expected_contains": "8,084", "source_chunk_id": 2, "chunk_type": "table", "note": "8,084는 재무상태표에만 있음. lexical_token=8,084"}
+{"id": "q06", "question": "연간 수주 10,594억원인 연도의 연간 영업이익은?", "expected_contains": "10,594", "source_chunk_id": 3, "chunk_type": "table", "note": "10,594는 손익표에만 있음"}
+{"id": "q07", "question": "자동화 매출이 28.8% 감소한 분기의 IT 부문 매출은?", "expected_contains": "28.8", "source_chunk_id": 3, "chunk_type": "table", "note": "28.8은 손익표에만 있음. dense는 자동화 텍스트(EIC +72%)와 혼동 가능"}
+{"id": "q08", "question": "현금및현금성자산이 2,641억원인 분기의 유동자산은?", "expected_contains": "2,641", "source_chunk_id": 2, "chunk_type": "table", "note": "2,641은 재무상태표에만 있음 (텍스트에는 없음)"}
+{"id": "q09", "question": "연간 매출이 14,859억원인 연도의 영업이익은?", "expected_contains": "14,859", "source_chunk_id": 3, "chunk_type": "table", "note": "14,859는 손익표에만 있음"}
+{"id": "q10", "question": "자본총계가 5,604억원인 시점의 부채비율은?", "expected_contains": "5,604", "source_chunk_id": 2, "chunk_type": "table", "note": "5,604는 재무상태표에만 있음"}

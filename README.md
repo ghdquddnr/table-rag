@@ -98,7 +98,7 @@ python -m eval.run_eval
 - [x] **Phase 1** — 파서 비교 하니스 (Docling vs MarkItDown)
 - [x] **Phase 2** — 표 인지 청킹, bge-m3 임베딩, ingest 파이프라인
 - [x] **Phase 3** — vector-only vs hybrid 벤치마크 → Recall@1 +0.300, MRR +0.180
-- [ ] **Phase 4** — FastAPI + 최소 데모
+- [x] **Phase 4** — FastAPI + 최소 데모 (`GET /`, `POST /search`, `GET /docs`)
 
 ---
 

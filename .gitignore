@@ -18,3 +18,12 @@ eval/parser_comparison.md
 # 모델 캐시
 .cache/
 *.bin
+
+# AI 툴 컨텍스트 파일
+CLAUDE.md
+.cursorrules
+.cursorignore
+.cursor/
+.aider*
+.copilot/
+.github/copilot-instructions.md

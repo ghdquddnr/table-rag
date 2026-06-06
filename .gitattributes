@@ -1,0 +1,14 @@
+# 줄바꿈 정규화 — 컨테이너(Linux)로 들어가는 파일은 LF 강제
+* text=auto
+
+*.sql      text eol=lf
+*.sh       text eol=lf
+*.py       text eol=lf
+*.yml      text eol=lf
+*.yaml     text eol=lf
+Makefile   text eol=lf
+Dockerfile text eol=lf
+
+# 바이너리/모델
+*.pdf  binary
+*.bin  binary

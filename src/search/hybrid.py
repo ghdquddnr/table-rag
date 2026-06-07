@@ -47,6 +47,7 @@ class SearchResult:
     chunk_type: str
     content: str
     section_header: str | None
+    page_number: int | None
     score: float
 
 
@@ -54,7 +55,7 @@ class SearchResult:
 # <% 연산자: word_similarity(a, b) > pg_trgm.word_similarity_threshold (default 0.6)
 # <<-> 연산자: 1 - word_similarity(a, b) (distance, ascending sort)
 _DENSE_ONLY_SQL = """
-SELECT id, document_id, chunk_type, content, section_header,
+SELECT id, document_id, chunk_type, content, section_header, page_number,
        1.0 - (embedding <=> %(embedding)s::vector) AS score
 FROM chunks
 WHERE embedding IS NOT NULL
@@ -64,7 +65,7 @@ LIMIT %(k)s
 
 _SQL = """
 WITH dense AS (
-    SELECT id, document_id, chunk_type, content, section_header,
+    SELECT id, document_id, chunk_type, content, section_header, page_number,
            ROW_NUMBER() OVER (ORDER BY embedding <=> %(embedding)s::vector) AS rank
     FROM chunks
     WHERE embedding IS NOT NULL
@@ -72,7 +73,7 @@ WITH dense AS (
     LIMIT %(top_n)s
 ),
 lexical AS (
-    SELECT id, document_id, chunk_type, content, section_header,
+    SELECT id, document_id, chunk_type, content, section_header, page_number,
            ROW_NUMBER() OVER (ORDER BY %(lexical_q)s <<-> content) AS rank
     FROM chunks
     WHERE %(lexical_q)s <%% content
@@ -86,12 +87,13 @@ rrf AS (
         COALESCE(d.chunk_type,     l.chunk_type)     AS chunk_type,
         COALESCE(d.content,        l.content)        AS content,
         COALESCE(d.section_header, l.section_header) AS section_header,
+        COALESCE(d.page_number,    l.page_number)    AS page_number,
         COALESCE(1.0 / (%(rrf_k)s + d.rank), 0)
         + COALESCE(1.0 / (%(rrf_k)s + l.rank), 0)   AS score
     FROM dense d
     FULL OUTER JOIN lexical l ON d.id = l.id
 )
-SELECT id, document_id, chunk_type, content, section_header, score
+SELECT id, document_id, chunk_type, content, section_header, page_number, score
 FROM rrf
 ORDER BY score DESC
 LIMIT %(k)s
@@ -135,7 +137,8 @@ def search(
             chunk_type=row[2],
             content=row[3],
             section_header=row[4],
-            score=float(row[5]),
+            page_number=row[5],
+            score=float(row[6]),
         )
         for row in rows
     ]

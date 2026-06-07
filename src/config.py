@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     embed_model: str = "BAAI/bge-m3"
     embed_dim: int = 1024
 
-    ollama_model: str = "qwen2.5"
+    ollama_model: str = "gemma4:12b"
     ollama_base_url: str = "http://localhost:11434"
 
     @property

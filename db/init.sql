@@ -2,11 +2,11 @@
 CREATE EXTENSION IF NOT EXISTS vector;
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
--- Documents table
 CREATE TABLE IF NOT EXISTS documents (
     id        SERIAL PRIMARY KEY,
     source    TEXT        NOT NULL,
     parser    TEXT        NOT NULL,  -- 'docling' | 'markitdown'
+    status    TEXT        NOT NULL DEFAULT 'pending',  -- 'pending' | 'processing' | 'completed' | 'failed'
     created_at TIMESTAMPTZ DEFAULT now()
 );
 

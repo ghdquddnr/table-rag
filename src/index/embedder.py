@@ -20,9 +20,10 @@ def _get_model():
         import huggingface_hub.file_download as _hf_fd
         _hf_fd.are_symlinks_supported = lambda cache_dir=None: False
 
+        import torch
         from FlagEmbedding import BGEM3FlagModel  # 지연 import
 
-        _model = BGEM3FlagModel(settings.embed_model, use_fp16=False)
+        _model = BGEM3FlagModel(settings.embed_model, use_fp16=torch.cuda.is_available())
     return _model
 
 

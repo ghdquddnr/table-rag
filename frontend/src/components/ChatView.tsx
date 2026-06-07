@@ -5,11 +5,14 @@ import { Send, BookOpen, AlertCircle, Layers } from "lucide-react";
 import { LLMConfig, DEFAULT_CONFIG } from "./SettingsView";
 import MarkdownTable from "./MarkdownTable";
 
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
+
 interface Reference {
   chunk_id: number;
   chunk_type: string;
   content: string;
   section_header: string | null;
+  page_number: number | null;
   score: number;
 }
 
@@ -22,6 +25,32 @@ interface Message {
   isStreaming?: boolean;
 }
 
+// **bold**, *italic* 패턴만 처리하는 경량 인라인 마크다운 렌더러
+function renderInlineMarkdown(text: string): React.ReactNode {
+  const lines = text.split("\n");
+  return lines.map((line, lineIdx) => {
+    const parts: React.ReactNode[] = [];
+    const regex = /(\*\*[^*\n]+\*\*|\*[^*\n]+\*)/g;
+    let lastIndex = 0;
+    let match;
+    let key = 0;
+    while ((match = regex.exec(line)) !== null) {
+      if (match.index > lastIndex) parts.push(<span key={key++}>{line.slice(lastIndex, match.index)}</span>);
+      const raw = match[0];
+      if (raw.startsWith("**")) parts.push(<strong key={key++}>{raw.slice(2, -2)}</strong>);
+      else parts.push(<em key={key++}>{raw.slice(1, -1)}</em>);
+      lastIndex = match.index + raw.length;
+    }
+    if (lastIndex < line.length) parts.push(<span key={key++}>{line.slice(lastIndex)}</span>);
+    return (
+      <React.Fragment key={lineIdx}>
+        {parts.length ? parts : line}
+        {lineIdx < lines.length - 1 && <br />}
+      </React.Fragment>
+    );
+  });
+}
+
 export default function ChatView() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
@@ -30,30 +59,26 @@ export default function ChatView() {
   
   const chatEndRef = useRef<HTMLDivElement>(null);
 
-  // Load config on mount (asynchronously to avoid synchronous setState in effect)
+  // Load config on mount
   useEffect(() => {
     const saved = localStorage.getItem("table_rag_llm_config");
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
-        setTimeout(() => {
-          setConfig(parsed);
-        }, 0);
+        setConfig(parsed);
       } catch (e) {
         console.error("Failed to parse config in ChatView", e);
       }
     }
     
     // Add welcome message
-    setTimeout(() => {
-      setMessages([
-        {
-          id: "welcome",
-          role: "assistant",
-          text: "안녕하세요! 표·숫자에 특화된 한국어 하이브리드 RAG 시스템입니다. 업로드한 PDF 보고서에 들어 있는 재무 정보나 통계 표 데이터에 대해 질문해 보세요. (예: '부채비율 44.3%를 기록한 시점의 자산총계는?')"
-        }
-      ]);
-    }, 0);
+    setMessages([
+      {
+        id: "welcome",
+        role: "assistant",
+        text: "안녕하세요! 표·숫자에 특화된 한국어 하이브리드 RAG 시스템입니다. 업로드한 PDF 보고서에 들어 있는 재무 정보나 통계 표 데이터에 대해 질문해 보세요. (예: '부채비율 44.3%를 기록한 시점의 자산총계는?')"
+      }
+    ]);
   }, []);
 
   // Auto scroll to bottom
@@ -87,14 +112,23 @@ export default function ChatView() {
 
     setMessages(prev => [...prev, userMessage, assistantMessage]);
 
+    // welcome 메시지 및 에러가 난 메시지를 제외한 과거 대화 히스토리 조립
+    const historyList = messages
+      .filter(m => m.id !== "welcome" && m.text && !m.error)
+      .map(m => ({
+        role: m.role,
+        content: m.text
+      }));
+
     try {
-      const res = await fetch("http://localhost:8000/api/chat", {
+      const res = await fetch(`${API_BASE}/api/chat`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
           query: queryText,
+          history: historyList,
           provider: config.provider,
           model: config.model,
           api_key: config.apiKey,
@@ -216,12 +250,12 @@ export default function ChatView() {
                   color: "var(--text-main)",
                   fontSize: "0.95rem",
                   lineHeight: "1.6",
-                  wordBreak: "break-all",
+                  overflowWrap: "break-word",
                   boxShadow: isUser ? "0 4px 15px rgba(59,130,246,0.1)" : "var(--card-shadow)"
                 }}
               >
                 {m.text ? (
-                  <div style={{ whiteSpace: "pre-line" }}>{m.text}</div>
+                  <div>{renderInlineMarkdown(m.text)}</div>
                 ) : m.isStreaming && !m.error ? (
                   <div style={{ display: "flex", gap: "5px", padding: "4px 0", alignItems: "center" }}>
                     <span style={{ width: "6px", height: "6px", background: "var(--primary)", borderRadius: "50%" }} className="animate-pulse-slow" />
@@ -301,6 +335,11 @@ export default function ChatView() {
                               {ref.section_header && (
                                 <span style={{ fontSize: "0.75rem", background: "rgba(255,255,255,0.05)", padding: "1px 6px", borderRadius: "4px" }}>
                                   {ref.section_header}
+                                </span>
+                              )}
+                              {ref.page_number && (
+                                <span style={{ fontSize: "0.75rem", background: "rgba(59,130,246,0.1)", color: "var(--primary)", padding: "1px 6px", borderRadius: "4px", fontWeight: "600" }}>
+                                  p. {ref.page_number}
                                 </span>
                               )}
                               <span style={{ fontSize: "0.75rem", color: "var(--text-dim)" }}>

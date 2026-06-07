@@ -2,6 +2,8 @@
 
 import React, { useState, useEffect } from "react";
 import { FileText, Settings, Database, Activity, Wifi, WifiOff, MessageSquare } from "lucide-react";
+
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
 import ChatView from "@/components/ChatView";
 import DocumentView from "@/components/DocumentView";
 import SettingsView from "@/components/SettingsView";
@@ -13,7 +15,7 @@ export default function Home() {
 
   const checkBackendHealth = async () => {
     try {
-      const res = await fetch("http://localhost:8000/health");
+      const res = await fetch(`${API_BASE}/health`);
       if (res.ok) {
         const data = await res.json();
         setBackendOnline(true);
@@ -26,11 +28,9 @@ export default function Home() {
     }
   };
 
-  // Ping backend on load and every 10 seconds (asynchronously to avoid synchronous setState in effect)
+  // Ping backend on load and every 10 seconds
   useEffect(() => {
-    setTimeout(() => {
-      checkBackendHealth();
-    }, 0);
+    checkBackendHealth();
     const interval = setInterval(checkBackendHealth, 10000);
     return () => clearInterval(interval);
   }, []);
@@ -216,7 +216,7 @@ export default function Home() {
           </div>
         </aside>
 
-        {/* Right Content Panel */}
+        {/* Right Content Panel — 컴포넌트를 언마운트하지 않고 display로 숨겨 상태(채팅 히스토리 등)를 보존 */}
         <main className="glass-panel" style={{
           flex: 1,
           padding: "24px",
@@ -225,9 +225,15 @@ export default function Home() {
           flexDirection: "column",
           position: "relative"
         }}>
-          {activeTab === "chat" && <ChatView />}
-          {activeTab === "documents" && <DocumentView />}
-          {activeTab === "settings" && <SettingsView />}
+          <div style={{ display: activeTab === "chat" ? "flex" : "none", flexDirection: "column", height: "100%" }}>
+            <ChatView />
+          </div>
+          <div style={{ display: activeTab === "documents" ? "flex" : "none", flexDirection: "column", height: "100%" }}>
+            <DocumentView />
+          </div>
+          <div style={{ display: activeTab === "settings" ? "flex" : "none", flexDirection: "column", height: "100%" }}>
+            <SettingsView />
+          </div>
         </main>
       </div>
     </div>

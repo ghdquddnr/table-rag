@@ -3,12 +3,15 @@
 import React, { useState, useEffect, useRef } from "react";
 import { Upload, FileText, Trash2, CheckCircle2, AlertCircle, RefreshCw } from "lucide-react";
 
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
+
 interface DocumentItem {
   id: number;
   filename: string;
   source: string;
   parser: string;
   created_at: string;
+  status: string;
   chunk_count: number;
 }
 
@@ -25,7 +28,7 @@ export default function DocumentView() {
   const fetchDocuments = async () => {
     setIsFetching(true);
     try {
-      const res = await fetch("http://localhost:8000/api/documents");
+      const res = await fetch(`${API_BASE}/api/documents`);
       if (!res.ok) throw new Error("Failed to fetch documents");
       const data = await res.json();
       setDocuments(data);
@@ -37,10 +40,17 @@ export default function DocumentView() {
   };
 
   useEffect(() => {
-    setTimeout(() => {
-      fetchDocuments();
-    }, 0);
+    fetchDocuments();
   }, []);
+
+  // 분석 중인 문서가 있을 경우 3초마다 상태를 자동 새로고침(폴링)
+  useEffect(() => {
+    const hasProcessing = documents.some(doc => doc.status === "processing");
+    if (!hasProcessing) return;
+
+    const interval = setInterval(fetchDocuments, 3000);
+    return () => clearInterval(interval);
+  }, [documents]);
 
   const handleUpload = async (file: File) => {
     if (!file.name.endsWith(".pdf")) {
@@ -56,19 +66,26 @@ export default function DocumentView() {
     formData.append("parser", parser);
 
     try {
-      const res = await fetch("http://localhost:8000/api/documents/upload", {
+      const res = await fetch(`${API_BASE}/api/documents/upload`, {
         method: "POST",
         body: formData,
       });
 
-      const data = await res.json();
+      let errorMsg = "인제스트 처리 중 오류가 발생했습니다.";
       if (!res.ok) {
-        throw new Error(data.detail || "인제스트 처리 중 오류가 발생했습니다.");
+        try {
+          const data = await res.json();
+          errorMsg = data.detail || errorMsg;
+        } catch {
+          errorMsg = (await res.text()) || errorMsg;
+        }
+        throw new Error(errorMsg);
       }
 
+      const data = await res.json();
       setUploadStatus({
         type: "success",
-        msg: `성공! 파일: ${data.filename} (${data.chunk_count}개 청크 적재됨)`,
+        msg: `성공! 파일 '${data.filename}'의 분석 및 인제스트가 백그라운드에서 실행 중입니다.`,
       });
       fetchDocuments();
     } catch (e) {
@@ -85,13 +102,19 @@ export default function DocumentView() {
     }
 
     try {
-      const res = await fetch(`http://localhost:8000/api/documents/${id}`, {
+      const res = await fetch(`${API_BASE}/api/documents/${id}`, {
         method: "DELETE",
       });
 
       if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.detail || "문서 삭제 실패");
+        let errorMsg = "문서 삭제 실패";
+        try {
+          const data = await res.json();
+          errorMsg = data.detail || errorMsg;
+        } catch {
+          errorMsg = (await res.text()) || errorMsg;
+        }
+        throw new Error(errorMsg);
       }
 
       setDocuments(prev => prev.filter(doc => doc.id !== id));
@@ -277,10 +300,20 @@ export default function DocumentView() {
                       <div style={{ fontSize: "0.85rem", fontWeight: "500", color: "var(--text-main)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                         {doc.filename}
                       </div>
-                      <div style={{ display: "flex", gap: "10px", fontSize: "0.75rem", color: "var(--text-dim)", marginTop: "4px" }}>
+                      <div style={{ display: "flex", gap: "10px", fontSize: "0.75rem", color: "var(--text-dim)", marginTop: "4px", alignItems: "center" }}>
                         <span>파서: <strong style={{ color: "var(--text-muted)" }}>{doc.parser}</strong></span>
                         <span>•</span>
-                        <span>청크: <strong style={{ color: "var(--primary)" }}>{doc.chunk_count}개</strong></span>
+                        {doc.status === "completed" ? (
+                          <span>청크: <strong style={{ color: "var(--accent)" }}>{doc.chunk_count}개</strong></span>
+                        ) : doc.status === "processing" ? (
+                          <span style={{ color: "var(--primary)", display: "flex", alignItems: "center", gap: "4px" }}>
+                            <RefreshCw size={10} className="animate-spin" /> 분석 중...
+                          </span>
+                        ) : doc.status === "failed" ? (
+                          <span style={{ color: "#f87171" }}>분석 실패</span>
+                        ) : (
+                          <span>대기 중</span>
+                        )}
                         <span>•</span>
                         <span>업로드: {new Date(doc.created_at).toLocaleDateString()}</span>
                       </div>

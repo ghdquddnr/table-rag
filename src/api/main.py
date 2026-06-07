@@ -5,36 +5,55 @@
 """
 from __future__ import annotations
 
-import os
-import shutil
 import json
+import shutil
+from contextlib import asynccontextmanager
 from pathlib import Path
-import psycopg
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form
+
+import httpx
+import ollama
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pgvector.psycopg import register_vector
+from psycopg_pool import ConnectionPool
 from pydantic import BaseModel, Field
-import ollama
-import httpx
 
 from src.config import settings
 from src.index.embedder import embed
+from src.index.ingest import ingest as run_ingest
 from src.search.hybrid import SearchResult, _lexical_token
 from src.search.hybrid import search as hybrid_search
-from src.index.ingest import ingest as run_ingest
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # ConnectionPool 생성 및 즉시 커넥션 활성화
+    # pgvector 타입 등록 함수인 register_vector를 configure 인자로 전달하여 모든 커넥션에서 자동 등록
+    app.state.pool = ConnectionPool(
+        settings.db_dsn,
+        min_size=2,
+        max_size=10,
+        configure=register_vector,
+        open=True
+    )
+    yield
+    app.state.pool.close()
+
 
 app = FastAPI(
     title="table-rag",
     description="표·숫자 특화 한국어 하이브리드 RAG (pgvector + pg_trgm, RRF)",
     version="0.1.0",
+    lifespan=lifespan,
 )
 
 # CORS Middleware 설정 (Next.js 로컬 서버와의 연동을 위함)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # 실무에서는 구체적인 Next.js 호스트 주소 기입
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -54,6 +73,7 @@ class SearchHit(BaseModel):
     chunk_type: str
     content: str
     section_header: str | None
+    page_number: int | None = None
     score: float
 
 
@@ -65,6 +85,7 @@ class SearchResponse(BaseModel):
 
 class ChatRequest(BaseModel):
     query: str
+    history: list[dict] = Field([], description="대화 히스토리 (멀티턴)")
     provider: str = Field("ollama", description="'ollama' | 'openai' | 'gemini'")
     model: str = Field("gemma4:12b", description="모델명")
     api_key: str | None = Field(None, description="상용 API Key")
@@ -76,7 +97,7 @@ class ChatRequest(BaseModel):
 @app.get("/health", summary="DB 연결 상태 확인")
 def health() -> dict:
     try:
-        with psycopg.connect(settings.db_dsn) as conn:
+        with app.state.pool.connection() as conn:
             row = conn.execute("SELECT COUNT(*) FROM chunks").fetchone()
         return {"status": "ok", "chunk_count": row[0] if row else 0}
     except Exception as exc:
@@ -92,8 +113,7 @@ def search(req: SearchRequest) -> SearchResponse:
         raise HTTPException(status_code=400, detail="k는 1~20 사이여야 합니다")
 
     emb = embed([req.query])[0]
-    with psycopg.connect(settings.db_dsn) as conn:
-        register_vector(conn)
+    with app.state.pool.connection() as conn:
         results: list[SearchResult] = hybrid_search(emb, req.query, conn, k=req.k)
 
     return SearchResponse(
@@ -105,6 +125,7 @@ def search(req: SearchRequest) -> SearchResponse:
                 chunk_type=r.chunk_type,
                 content=r.content,
                 section_header=r.section_header,
+                page_number=r.page_number,
                 score=round(r.score, 6),
             )
             for r in results
@@ -117,13 +138,13 @@ def search(req: SearchRequest) -> SearchResponse:
 def list_documents():
     """DB에 적재된 모든 문서의 리스트와 각 문서별 chunk 개수를 반환합니다."""
     try:
-        with psycopg.connect(settings.db_dsn) as conn:
+        with app.state.pool.connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
-                    SELECT d.id, d.source, d.parser, d.created_at, COUNT(c.id) as chunk_count
+                    SELECT d.id, d.source, d.parser, d.created_at, d.status, COUNT(c.id) as chunk_count
                     FROM documents d
                     LEFT JOIN chunks c ON d.id = c.document_id
-                    GROUP BY d.id
+                    GROUP BY d.id, d.status
                     ORDER BY d.created_at DESC
                 """)
                 rows = cur.fetchall()
@@ -137,23 +158,40 @@ def list_documents():
                 "source": row[1],
                 "parser": row[2],
                 "created_at": row[3].isoformat() if row[3] else None,
-                "chunk_count": row[4]
+                "status": row[4],
+                "chunk_count": row[5]
             })
         return docs
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"문서 목록 조회 실패: {str(e)}")
 
 
+def _run_ingest_background(doc_id: int, file_path: Path, parser: str):
+    try:
+        with app.state.pool.connection() as conn:
+            run_ingest(file_path, parser=parser, conn=conn, doc_id=doc_id)
+    except Exception as e:
+        print(f"[background-ingest] doc_id={doc_id} 실패: {str(e)}")
+        # 실패 시 디스크 상의 업로드 임시 파일 정리 시도
+        if file_path.exists():
+            try:
+                file_path.unlink()
+            except Exception:
+                pass
+
+
 @app.post("/api/documents/upload", summary="PDF 문서 업로드 및 파싱 적재")
 async def upload_document(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     parser: str = Form("docling")  # 'docling' | 'markitdown'
 ):
-    """PDF 파일을 업로드받아 서버 로컬에 저장 후, 선택된 파서로 인제스트를 구동합니다."""
-    if not file.filename.endswith(".pdf"):
+    """PDF 파일을 업로드받아 서버 로컬에 저장 후, 선택된 파서로 백그라운드 인제스트를 구동합니다."""
+    if not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="PDF 파일 포맷만 지원합니다")
 
-    file_path = UPLOAD_DIR / file.filename
+    safe_name = Path(file.filename).name
+    file_path = UPLOAD_DIR / safe_name
     try:
         with file_path.open("wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
@@ -161,28 +199,36 @@ async def upload_document(
         raise HTTPException(status_code=500, detail=f"파일 임시 저장 오류: {str(e)}")
 
     try:
-        # 동기 인제스트 구동 (파싱 -> 청킹 -> 임베딩 -> DB적재)
-        chunk_count = run_ingest(file_path, parser=parser)
-        if chunk_count == 0:
-            raise HTTPException(status_code=500, detail="문서 파싱/청킹 결과가 비어 있거나 처리되지 못했습니다.")
-        return {
-            "status": "success",
-            "filename": file.filename,
-            "parser": parser,
-            "chunk_count": chunk_count
-        }
+        # DB 레코드를 'processing' 상태로 우선 생성
+        with app.state.pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO documents (source, parser, status) VALUES (%s, %s, 'processing') RETURNING id",
+                    (str(file_path), parser),
+                )
+                doc_id = cur.fetchone()[0]
+            conn.commit()
     except Exception as e:
-        # 적재 실패 시 임시 파일 삭제
         if file_path.exists():
             file_path.unlink()
-        raise HTTPException(status_code=500, detail=f"문서 인제스트 처리 실패: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"문서 데이터베이스 레코드 생성 실패: {str(e)}")
+
+    # BackgroundTasks를 이용해 비동기로 인제스트 파이프라인 구동
+    background_tasks.add_task(_run_ingest_background, doc_id, file_path, parser)
+
+    return {
+        "status": "processing",
+        "doc_id": doc_id,
+        "filename": safe_name,
+        "parser": parser
+    }
 
 
 @app.delete("/api/documents/{id}", summary="문서 삭제 (Cascade)")
 def delete_document(id: int):
     """문서를 데이터베이스에서 삭제하고 cascade 연동된 chunk를 일괄 제거합니다."""
     try:
-        with psycopg.connect(settings.db_dsn) as conn:
+        with app.state.pool.connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("SELECT source FROM documents WHERE id = %s", (id,))
                 row = cur.fetchone()
@@ -207,29 +253,33 @@ def delete_document(id: int):
 
 
 # ── Phase 5/6 RAG 채팅 API ──────────────────────────────────────────────────
+def _retrieve_and_search(query: str, k: int = 5) -> tuple[list[SearchResult], dict[int, str]]:
+    emb = embed([query])[0]
+    with app.state.pool.connection() as conn:
+        results: list[SearchResult] = hybrid_search(emb, query, conn, k=k)
+        
+        # SearchResult에 없는 caption을 DB에서 개별 조회
+        chunk_ids = [r.chunk_id for r in results]
+        captions = {}
+        if chunk_ids:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, caption FROM chunks WHERE id = ANY(%s)",
+                    (chunk_ids,)
+                )
+                captions = {row[0]: row[1] for row in cur.fetchall()}
+    return results, captions
+
+
 @app.post("/api/chat", summary="RAG 대화형 검색 및 생성")
 async def chat(req: ChatRequest):
     """하이브리드 검색 기반 Context를 주입하여 선택한 LLM으로 스트리밍 또는 단일 생성 답변을 전송합니다."""
     if not req.query.strip():
         raise HTTPException(status_code=400, detail="질문이 비어 있습니다")
 
-    # 1. 하이브리드 검색 수행
+    # 1. 하이브리드 검색 수행 (스레드풀 위임)
     try:
-        emb = embed([req.query])[0]
-        with psycopg.connect(settings.db_dsn) as conn:
-            register_vector(conn)
-            results: list[SearchResult] = hybrid_search(emb, req.query, conn, k=5)
-            
-            # SearchResult에 없는 caption을 DB에서 개별 조회
-            chunk_ids = [r.chunk_id for r in results]
-            captions = {}
-            if chunk_ids:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        "SELECT id, caption FROM chunks WHERE id = ANY(%s)",
-                        (chunk_ids,)
-                    )
-                    captions = {row[0]: row[1] for row in cur.fetchall()}
+        results, captions = await run_in_threadpool(_retrieve_and_search, req.query, k=5)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"하이브리드 검색 실패: {str(e)}")
 
@@ -257,6 +307,7 @@ async def chat(req: ChatRequest):
             "content": r.content,
             "section_header": r.section_header,
             "caption": captions.get(r.chunk_id),
+            "page_number": r.page_number,
             "score": r.score
         }
         for r in results
@@ -275,11 +326,12 @@ async def chat(req: ChatRequest):
                         model=req.model,
                         messages=[
                             {"role": "system", "content": system_prompt},
+                            *req.history,
                             {"role": "user", "content": req.query}
                         ],
                         stream=True
                     ):
-                        content = chunk.get("message", {}).get("content", "")
+                        content = chunk.message.content or ""
                         if content:
                             yield f"data: {json.dumps({'type': 'content', 'text': content}, ensure_ascii=False)}\n\n"
                 except Exception as e:
@@ -294,11 +346,12 @@ async def chat(req: ChatRequest):
                     model=req.model,
                     messages=[
                         {"role": "system", "content": system_prompt},
+                        *req.history,
                         {"role": "user", "content": req.query}
                     ],
                     stream=False
                 )
-                answer = resp.get("message", {}).get("content", "")
+                answer = resp.message.content or ""
                 return {"response": answer, "references": refs}
             except Exception as e:
                 raise HTTPException(status_code=500, detail=f"Ollama 호출 실패: {str(e)}")
@@ -316,6 +369,7 @@ async def chat(req: ChatRequest):
             "model": req.model,
             "messages": [
                 {"role": "system", "content": system_prompt},
+                *req.history,
                 {"role": "user", "content": req.query}
             ],
             "stream": req.stream
@@ -366,23 +420,30 @@ async def chat(req: ChatRequest):
         if not req.api_key:
             raise HTTPException(status_code=400, detail="Gemini API Key가 누락되었습니다")
         
-        # 스트리밍 방식과 일반 API 호출의 엔드포인트 구분
+        # 스트리밍 방식과 일반 API 호출의 엔드포인트 구분 (스트리밍 시 alt=sse 필수)
         if req.stream:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{req.model}:streamGenerateContent?key={req.api_key}"
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{req.model}:streamGenerateContent?alt=sse&key={req.api_key}"
         else:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{req.model}:generateContent?key={req.api_key}"
 
+        # Gemini의 컨텐츠 히스토리 구조 변환
+        gemini_contents = []
+        for h in req.history:
+            role = "model" if h.get("role") == "assistant" else "user"
+            gemini_contents.append({
+                "role": role,
+                "parts": [{"text": h.get("content", "")}]
+            })
+        gemini_contents.append({
+            "role": "user",
+            "parts": [{"text": req.query}]
+        })
+
         payload = {
-            "contents": [
-                {
-                    "role": "user",
-                    "parts": [
-                        {
-                            "text": f"{system_prompt}\n\n사용자 질문: {req.query}"
-                        }
-                    ]
-                }
-            ]
+            "contents": gemini_contents,
+            "systemInstruction": {
+                "parts": [{"text": system_prompt}]
+            }
         }
 
         if req.stream:
@@ -396,35 +457,18 @@ async def chat(req: ChatRequest):
                                 yield f"data: {json.dumps({'type': 'error', 'text': f'Gemini 에러 ({response.status_code}): {error_text.decode()}'}, ensure_ascii=False)}\n\n"
                                 return
                             
-                            buffer = ""
-                            async for chunk_text in response.iter_text():
-                                buffer += chunk_text
-                                brace_count = 0
-                                in_string = False
-                                start_idx = 0
-                                idx = 0
-                                while idx < len(buffer):
-                                    char = buffer[idx]
-                                    if char == '"' and (idx == 0 or buffer[idx-1] != '\\'):
-                                        in_string = not in_string
-                                    if not in_string:
-                                        if char == '{':
-                                            if brace_count == 0:
-                                                start_idx = idx
-                                            brace_count += 1
-                                        elif char == '}':
-                                            brace_count -= 1
-                                            if brace_count == 0:
-                                                obj_str = buffer[start_idx:idx+1]
-                                                try:
-                                                    obj = json.loads(obj_str)
-                                                    text = obj["candidates"][0]["content"]["parts"][0]["text"]
-                                                    yield f"data: {json.dumps({'type': 'content', 'text': text}, ensure_ascii=False)}\n\n"
-                                                except Exception:
-                                                    pass
-                                                buffer = buffer[idx+1:]
-                                                idx = -1
-                                    idx += 1
+                            async for line in response.iter_lines():
+                                if not line:
+                                    continue
+                                if line.startswith("data: "):
+                                    data_str = line[6:].strip()
+                                    try:
+                                        data_json = json.loads(data_str)
+                                        content = data_json.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+                                        if content:
+                                            yield f"data: {json.dumps({'type': 'content', 'text': content}, ensure_ascii=False)}\n\n"
+                                    except Exception:
+                                        pass
                 except Exception as e:
                     yield f"data: {json.dumps({'type': 'error', 'text': f'Gemini 연결 오류: {str(e)}'}, ensure_ascii=False)}\n\n"
                 yield "data: [DONE]\n\n"

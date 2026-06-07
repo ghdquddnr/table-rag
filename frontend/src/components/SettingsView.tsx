@@ -28,15 +28,13 @@ export default function SettingsView() {
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [connError, setConnError] = useState<string | null>(null);
 
-  // Load config from LocalStorage on mount (asynchronously to avoid synchronous setState in effect)
+  // Load config from LocalStorage on mount
   useEffect(() => {
     const saved = localStorage.getItem("table_rag_llm_config");
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
-        setTimeout(() => {
-          setConfig(prev => ({ ...prev, ...parsed }));
-        }, 0);
+        setConfig(prev => ({ ...prev, ...parsed }));
       } catch (e) {
         console.error("Failed to parse saved LLM config", e);
       }
@@ -62,8 +60,8 @@ export default function SettingsView() {
         
         // If currently selected model is not in list, pick appropriate one
         if (models.length > 0 && !models.includes(config.model)) {
-          const gemma = models.find((m: string) => m.startsWith("gemma4"));
-          setConfig(prev => ({ ...prev, model: gemma || models[0] }));
+          const defaultModel = models.find((m: string) => m.startsWith("gemma4")) || models[0];
+          setConfig(prev => ({ ...prev, model: defaultModel }));
         }
       } catch (e) {
         console.warn("Ollama connection failed, falling back to manual model input", e);
@@ -77,7 +75,8 @@ export default function SettingsView() {
     if (config.provider === "ollama") {
       fetchOllamaModels(config.apiUrl);
     }
-  }, [config.provider, config.apiUrl, config.model]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [config.provider, config.apiUrl]);
 
   const handleSave = () => {
     localStorage.setItem("table_rag_llm_config", JSON.stringify(config));

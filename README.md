@@ -118,15 +118,20 @@ python -m src.index.ingest data/samples/report.pdf --parser docling
 python -m src.search.hybrid "영업이익이 37억원인 분기의 IT 매출은"
 
 # 5. API 서버 실행
-uvicorn src.api.main:app --reload
+uvicorn src.api.main:app --reload --port 8000
+
+# 6. Next.js 프론트엔드 실행
+cd frontend
+npm run dev
 ```
 
 서버 실행 후:
-- `http://localhost:8000` — 검색 데모 페이지
+- `http://localhost:3000` — 프리미엄 다크 모드 RAG 대시보드 데모 페이지 (추천)
+- `http://localhost:8000` — 검색 데모 페이지 (FastAPI 빌트인 최소 HTML)
 - `http://localhost:8000/docs` — Swagger UI
 
 ```bash
-# 6. 벤치마크 (vector-only vs hybrid 비교)
+# 7. 벤치마크 (vector-only vs hybrid 비교)
 python -m eval.run_eval
 ```
 

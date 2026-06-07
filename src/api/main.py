@@ -20,6 +20,7 @@ from pgvector.psycopg import register_vector
 from psycopg_pool import ConnectionPool
 from pydantic import BaseModel, Field
 
+from src.api.condense import CONDENSE_SYSTEM, build_condense_user, clean_condensed
 from src.config import settings
 from src.index.embedder import embed
 from src.index.ingest import ingest as run_ingest
@@ -93,6 +94,7 @@ class ChatRequest(BaseModel):
     api_url: str | None = Field(None, description="커스텀 API URL")
     stream: bool = Field(True, description="스트리밍 스트림 여부")
     search_mode: str = Field("hybrid", description="'hybrid' | 'dense'")
+    condense: bool = Field(True, description="멀티턴 후속 질문을 독립 검색 질의로 재작성할지 여부")
 
 
 # ── 엔드포인트 ───────────────────────────────────────────────────────────────
@@ -273,15 +275,91 @@ def _retrieve_and_search(query: str, k: int = 5, mode: str = "hybrid") -> tuple[
     return results, captions
 
 
+async def _condense_query(req: ChatRequest) -> str:
+    """멀티턴 후속 질문을 독립 검색 질의로 재작성한다.
+
+    히스토리가 없거나 LLM 호출이 실패하면 원본 질의를 그대로 반환한다.
+    검색에만 쓰이는 보조 호출이므로 실패가 대화를 막지 않도록 방어적으로 처리한다.
+    """
+    if not req.history:
+        return req.query
+
+    user_content = build_condense_user(req.history, req.query)
+    messages = [
+        {"role": "system", "content": CONDENSE_SYSTEM},
+        {"role": "user", "content": user_content},
+    ]
+
+    try:
+        if req.provider == "ollama":
+            host = req.api_url or settings.ollama_base_url
+            client = ollama.AsyncClient(host=host)
+            resp = await client.chat(model=req.model, messages=messages, stream=False)
+            raw = resp.message.content or ""
+
+        elif req.provider == "openai":
+            if not req.api_key:
+                return req.query
+            url = req.api_url or "https://api.openai.com/v1/chat/completions"
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
+                    url,
+                    headers={"Authorization": f"Bearer {req.api_key}"},
+                    json={"model": req.model, "messages": messages, "stream": False},
+                    timeout=30.0,
+                )
+                if resp.status_code != 200:
+                    return req.query
+                raw = resp.json().get("choices", [{}])[0].get("message", {}).get("content", "")
+
+        elif req.provider == "gemini":
+            if not req.api_key:
+                return req.query
+            url = (
+                f"https://generativelanguage.googleapis.com/v1beta/models/"
+                f"{req.model}:generateContent?key={req.api_key}"
+            )
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
+                    url,
+                    json={
+                        "contents": [{"role": "user", "parts": [{"text": user_content}]}],
+                        "systemInstruction": {"parts": [{"text": CONDENSE_SYSTEM}]},
+                    },
+                    timeout=30.0,
+                )
+                if resp.status_code != 200:
+                    return req.query
+                raw = (
+                    resp.json()
+                    .get("candidates", [{}])[0]
+                    .get("content", {})
+                    .get("parts", [{}])[0]
+                    .get("text", "")
+                )
+        else:
+            return req.query
+    except Exception:
+        # 재작성 실패는 치명적이지 않음 → 원본 질의로 폴백
+        return req.query
+
+    return clean_condensed(raw, fallback=req.query)
+
+
 @app.post("/api/chat", summary="RAG 대화형 검색 및 생성")
 async def chat(req: ChatRequest):
     """하이브리드 검색 기반 Context를 주입하여 선택한 LLM으로 스트리밍 또는 단일 생성 답변을 전송합니다."""
     if not req.query.strip():
         raise HTTPException(status_code=400, detail="질문이 비어 있습니다")
 
-    # 1. 하이브리드 검색 수행 (스레드풀 위임)
+    # 0. 멀티턴 후속 질문을 독립 검색 질의로 재작성 (Query Condensing)
+    search_query = await _condense_query(req) if req.condense else req.query
+    # 원본과 달라졌을 때만 UI에 노출 (재작성 효과 시연용)
+    condensed_for_meta = search_query if search_query != req.query else None
+
+    # 1. 하이브리드 검색 수행 (재작성된 질의로 검색, 스레드풀 위임)
     try:
-        results, captions = await run_in_threadpool(_retrieve_and_search, req.query, 5, req.search_mode)
+        results, captions = await run_in_threadpool(_retrieve_and_search, search_query, 5, req.search_mode)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"하이브리드 검색 실패: {str(e)}")
 
@@ -315,13 +393,19 @@ async def chat(req: ChatRequest):
         for r in results
     ]
 
+    # 스트리밍 첫 패킷으로 보낼 메타데이터 (references + 재작성된 검색 질의)
+    meta_json = json.dumps(
+        {"type": "metadata", "references": refs, "condensed_query": condensed_for_meta},
+        ensure_ascii=False,
+    )
+
     # 3. LLM API 연동 및 응답 생성
     if req.provider == "ollama":
         host = req.api_url or settings.ollama_base_url
         if req.stream:
             async def generate_ollama():
                 # 스트리밍 시 메타데이터를 첫 패킷으로 송신
-                yield f"data: {json.dumps({'type': 'metadata', 'references': refs}, ensure_ascii=False)}\n\n"
+                yield f"data: {meta_json}\n\n"
                 try:
                     client = ollama.AsyncClient(host=host)
                     async for chunk in await client.chat(
@@ -354,7 +438,7 @@ async def chat(req: ChatRequest):
                     stream=False
                 )
                 answer = resp.message.content or ""
-                return {"response": answer, "references": refs}
+                return {"response": answer, "references": refs, "condensed_query": condensed_for_meta}
             except Exception as e:
                 raise HTTPException(status_code=500, detail=f"Ollama 호출 실패: {str(e)}")
 
@@ -379,7 +463,7 @@ async def chat(req: ChatRequest):
 
         if req.stream:
             async def generate_openai():
-                yield f"data: {json.dumps({'type': 'metadata', 'references': refs}, ensure_ascii=False)}\n\n"
+                yield f"data: {meta_json}\n\n"
                 try:
                     async with httpx.AsyncClient() as client:
                         async with client.stream("POST", url, headers=headers, json=payload, timeout=60.0) as response:
@@ -414,7 +498,7 @@ async def chat(req: ChatRequest):
                         raise HTTPException(status_code=resp.status_code, detail=resp.text)
                     data = resp.json()
                     answer = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-                    return {"response": answer, "references": refs}
+                    return {"response": answer, "references": refs, "condensed_query": condensed_for_meta}
             except Exception as e:
                 raise HTTPException(status_code=500, detail=f"OpenAI 호출 실패: {str(e)}")
 
@@ -450,7 +534,7 @@ async def chat(req: ChatRequest):
 
         if req.stream:
             async def generate_gemini():
-                yield f"data: {json.dumps({'type': 'metadata', 'references': refs}, ensure_ascii=False)}\n\n"
+                yield f"data: {meta_json}\n\n"
                 try:
                     async with httpx.AsyncClient() as client:
                         async with client.stream("POST", url, json=payload, timeout=60.0) as response:
@@ -484,7 +568,7 @@ async def chat(req: ChatRequest):
                         raise HTTPException(status_code=resp.status_code, detail=resp.text)
                     data = resp.json()
                     answer = data.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
-                    return {"response": answer, "references": refs}
+                    return {"response": answer, "references": refs, "condensed_query": condensed_for_meta}
             except Exception as e:
                 raise HTTPException(status_code=500, detail=f"Gemini 호출 실패: {str(e)}")
     else:

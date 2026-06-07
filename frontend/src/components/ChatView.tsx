@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useRef } from "react";
-import { Send, BookOpen, AlertCircle, Layers } from "lucide-react";
+import { Send, BookOpen, AlertCircle, Layers, Search } from "lucide-react";
 import { LLMConfig, DEFAULT_CONFIG } from "./SettingsView";
 import MarkdownTable from "./MarkdownTable";
 
@@ -23,6 +23,7 @@ interface Message {
   references?: Reference[];
   error?: string;
   isStreaming?: boolean;
+  condensedQuery?: string | null; // 멀티턴 후속 질문이 독립 질의로 재작성된 경우
 }
 
 // **bold**, *italic* 패턴만 처리하는 경량 인라인 마크다운 렌더러
@@ -183,9 +184,9 @@ export default function ChatView() {
             try {
               const parsed = JSON.parse(dataStr);
               if (parsed.type === "metadata") {
-                // references metadata received
-                setMessages(prev => 
-                  prev.map(m => m.id === assistantMsgId ? { ...m, references: parsed.references } : m)
+                // references + 재작성된 검색 질의 수신
+                setMessages(prev =>
+                  prev.map(m => m.id === assistantMsgId ? { ...m, references: parsed.references, condensedQuery: parsed.condensed_query } : m)
                 );
               } else if (parsed.type === "content") {
                 // content token received
@@ -316,6 +317,28 @@ export default function ChatView() {
                   </div>
                 )}
               </div>
+
+              {/* Query Condensing: 후속 질문이 독립 검색 질의로 재작성된 경우 표시 */}
+              {!isUser && m.condensedQuery && (
+                <div style={{
+                  marginTop: "8px",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "6px",
+                  fontSize: "0.75rem",
+                  color: "var(--text-dim)",
+                  padding: "4px 8px",
+                  background: "rgba(245,158,11,0.06)",
+                  border: "1px solid rgba(245,158,11,0.18)",
+                  borderRadius: "6px",
+                  maxWidth: "100%"
+                }}>
+                  <Search size={12} style={{ color: "#f59e0b", flexShrink: 0 }} />
+                  <span style={{ overflowWrap: "anywhere" }}>
+                    검색 질의 재작성: <span style={{ color: "var(--text-muted)", fontStyle: "italic" }}>{m.condensedQuery}</span>
+                  </span>
+                </div>
+              )}
 
               {/* RAG References Accordion */}
               {!isUser && m.references && m.references.length > 0 && (

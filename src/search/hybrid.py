@@ -107,14 +107,21 @@ def search(
     k: int = 10,
     rrf_k: int = 60,
     top_n: int = 40,
+    mode: str = "hybrid",
 ) -> list[SearchResult]:
     """RRF 하이브리드 검색. dense + lexical(word_similarity) 순위를 RRF로 융합.
 
+    mode='hybrid': dense + lexical RRF (기본값)
+    mode='dense':  dense cosine 단독 (lexical 토큰 무시)
     lexical_token: 질문에서 숫자 패턴 추출 → word_similarity로 표 안 숫자 직접 매칭.
     """
     register_vector(conn)
     lexical_q = _lexical_token(query_text)
-    sql = _SQL if lexical_q is not None else _DENSE_ONLY_SQL
+    if mode == "dense":
+        sql = _DENSE_ONLY_SQL
+        lexical_q = None  # dense 전용 모드: lexical 비활성
+    else:
+        sql = _SQL if lexical_q is not None else _DENSE_ONLY_SQL
     params: dict = {
         "embedding": query_embedding,
         "top_n": top_n,

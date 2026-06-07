@@ -56,7 +56,8 @@ export default function ChatView() {
   const [input, setInput] = useState("");
   const [config, setConfig] = useState<LLMConfig>(DEFAULT_CONFIG);
   const [activeRefId, setActiveRefId] = useState<string | null>(null); // For accordion toggle
-  
+  const [searchMode, setSearchMode] = useState<"hybrid" | "dense">("hybrid");
+
   const chatEndRef = useRef<HTMLDivElement>(null);
 
   // Load config on mount
@@ -133,7 +134,8 @@ export default function ChatView() {
           model: config.model,
           api_key: config.apiKey,
           api_url: config.apiUrl,
-          stream: true
+          stream: true,
+          search_mode: searchMode
         })
       });
 
@@ -222,8 +224,42 @@ export default function ChatView() {
           <Layers size={14} style={{ color: "var(--primary)" }} />
           <span>Active LLM Model: <strong style={{ color: "var(--text-main)" }}>{config.provider.toUpperCase()} ({config.model})</strong></span>
         </div>
-        <div>
-          <span>RRF Hybrid Search: <strong style={{ color: "var(--accent)" }}>Dense Cosine + pg_trgm word_similarity</strong></span>
+        {/* Search Mode Toggle */}
+        <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+          <button
+            onClick={() => setSearchMode("hybrid")}
+            style={{
+              padding: "4px 12px",
+              borderRadius: "6px",
+              border: "1px solid",
+              borderColor: searchMode === "hybrid" ? "var(--accent)" : "var(--panel-border)",
+              background: searchMode === "hybrid" ? "rgba(16,185,129,0.15)" : "transparent",
+              color: searchMode === "hybrid" ? "var(--accent)" : "var(--text-muted)",
+              fontSize: "0.75rem",
+              fontWeight: searchMode === "hybrid" ? "600" : "400",
+              cursor: "pointer",
+              transition: "all 0.2s"
+            }}
+          >
+            🔀 Hybrid
+          </button>
+          <button
+            onClick={() => setSearchMode("dense")}
+            style={{
+              padding: "4px 12px",
+              borderRadius: "6px",
+              border: "1px solid",
+              borderColor: searchMode === "dense" ? "var(--primary)" : "var(--panel-border)",
+              background: searchMode === "dense" ? "rgba(59,130,246,0.15)" : "transparent",
+              color: searchMode === "dense" ? "var(--primary)" : "var(--text-muted)",
+              fontSize: "0.75rem",
+              fontWeight: searchMode === "dense" ? "600" : "400",
+              cursor: "pointer",
+              transition: "all 0.2s"
+            }}
+          >
+            📊 Dense only
+          </button>
         </div>
       </div>
 

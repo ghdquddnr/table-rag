@@ -66,6 +66,7 @@ UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 class SearchRequest(BaseModel):
     query: str
     k: int = 5
+    search_mode: str = Field("hybrid", description="'hybrid' | 'dense'")
 
 
 class SearchHit(BaseModel):
@@ -91,6 +92,7 @@ class ChatRequest(BaseModel):
     api_key: str | None = Field(None, description="상용 API Key")
     api_url: str | None = Field(None, description="커스텀 API URL")
     stream: bool = Field(True, description="스트리밍 스트림 여부")
+    search_mode: str = Field("hybrid", description="'hybrid' | 'dense'")
 
 
 # ── 엔드포인트 ───────────────────────────────────────────────────────────────
@@ -114,11 +116,11 @@ def search(req: SearchRequest) -> SearchResponse:
 
     emb = embed([req.query])[0]
     with app.state.pool.connection() as conn:
-        results: list[SearchResult] = hybrid_search(emb, req.query, conn, k=req.k)
+        results: list[SearchResult] = hybrid_search(emb, req.query, conn, k=req.k, mode=req.search_mode)
 
     return SearchResponse(
         query=req.query,
-        lexical_token=_lexical_token(req.query),
+        lexical_token=None if req.search_mode == "dense" else _lexical_token(req.query),
         hits=[
             SearchHit(
                 chunk_id=r.chunk_id,
@@ -253,10 +255,10 @@ def delete_document(id: int):
 
 
 # ── Phase 5/6 RAG 채팅 API ──────────────────────────────────────────────────
-def _retrieve_and_search(query: str, k: int = 5) -> tuple[list[SearchResult], dict[int, str]]:
+def _retrieve_and_search(query: str, k: int = 5, mode: str = "hybrid") -> tuple[list[SearchResult], dict[int, str]]:
     emb = embed([query])[0]
     with app.state.pool.connection() as conn:
-        results: list[SearchResult] = hybrid_search(emb, query, conn, k=k)
+        results: list[SearchResult] = hybrid_search(emb, query, conn, k=k, mode=mode)
         
         # SearchResult에 없는 caption을 DB에서 개별 조회
         chunk_ids = [r.chunk_id for r in results]
@@ -279,7 +281,7 @@ async def chat(req: ChatRequest):
 
     # 1. 하이브리드 검색 수행 (스레드풀 위임)
     try:
-        results, captions = await run_in_threadpool(_retrieve_and_search, req.query, k=5)
+        results, captions = await run_in_threadpool(_retrieve_and_search, req.query, 5, req.search_mode)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"하이브리드 검색 실패: {str(e)}")
 

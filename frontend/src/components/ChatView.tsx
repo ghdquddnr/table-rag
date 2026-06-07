@@ -60,19 +60,28 @@ export default function ChatView() {
 
   const chatEndRef = useRef<HTMLDivElement>(null);
 
-  // Load config on mount
+  // Load config on mount + localStorage 변경 시 재동기화
   useEffect(() => {
-    const saved = localStorage.getItem("table_rag_llm_config");
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        setConfig(parsed);
-      } catch (e) {
-        console.error("Failed to parse config in ChatView", e);
+    const loadConfig = () => {
+      const saved = localStorage.getItem("table_rag_llm_config");
+      if (saved) {
+        try {
+          setConfig(JSON.parse(saved));
+        } catch (e) {
+          console.error("Failed to parse config in ChatView", e);
+        }
       }
-    }
-    
-    // Add welcome message
+    };
+
+    loadConfig();
+
+    // SettingsView에서 저장 시 발생하는 storage 이벤트 수신
+    window.addEventListener("storage", loadConfig);
+    return () => window.removeEventListener("storage", loadConfig);
+  }, []);
+
+  // Add welcome message on mount
+  useEffect(() => {
     setMessages([
       {
         id: "welcome",

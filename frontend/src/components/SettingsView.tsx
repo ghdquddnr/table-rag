@@ -80,6 +80,9 @@ export default function SettingsView() {
 
   const handleSave = () => {
     localStorage.setItem("table_rag_llm_config", JSON.stringify(config));
+    // 같은 탭의 ChatView에도 변경을 알리기 위해 커스텀 이벤트 dispatch
+    // (window.storage 이벤트는 다른 탭에서만 발생하므로 직접 발행 필요)
+    window.dispatchEvent(new Event("storage"));
     setSaveSuccess(true);
     setTimeout(() => setSaveSuccess(false), 2000);
   };

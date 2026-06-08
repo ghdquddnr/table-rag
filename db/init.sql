@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS chunks (
     caption        TEXT,
     page_number    INTEGER,
     embedding      vector(1024),
+    sparse_embedding JSONB,
     created_at     TIMESTAMPTZ DEFAULT now()
 );
 

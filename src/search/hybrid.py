@@ -1,4 +1,9 @@
-"""RRF (Reciprocal Rank Fusion) 하이브리드 검색: dense cosine + pg_trgm lexical.
+"""RRF (Reciprocal Rank Fusion) 하이브리드 검색.
+
+지원 모드:
+  dense  : bge-m3 dense cosine 단독
+  hybrid : dense + pg_trgm lexical  (2-way, query_sparse 없을 때)
+           dense + pg_trgm lexical + bge-m3 sparse (3-way, query_sparse 있을 때)
 
 §9 함정 메모:
 - psycopg %(name)s 스타일에서 pg_trgm % 연산자는 %% 로 이스케이프.
@@ -9,7 +14,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import psycopg
 from pgvector.psycopg import register_vector
@@ -49,6 +54,14 @@ class SearchResult:
     section_header: str | None
     page_number: int | None
     score: float
+    channels: list[str] = field(default_factory=list)  # 기여한 채널 ('dense','lexical','sparse')
+
+
+def _sparse_dot(query_sparse: dict[str, float], chunk_sparse: dict | None) -> float:
+    """bge-m3 sparse 벡터 내적 계산."""
+    if not chunk_sparse:
+        return 0.0
+    return sum(query_sparse.get(t, 0.0) * w for t, w in chunk_sparse.items())
 
 
 # word_similarity(token, content): token이 content의 부분 문자열과 얼마나 일치하는지.
@@ -63,6 +76,7 @@ ORDER BY embedding <=> %(embedding)s::vector
 LIMIT %(k)s
 """
 
+# 2-way RRF (dense + lexical): 기존 SQL, query_sparse 없을 때 사용
 _SQL = """
 WITH dense AS (
     SELECT id, document_id, chunk_type, content, section_header, page_number,
@@ -99,6 +113,50 @@ ORDER BY score DESC
 LIMIT %(k)s
 """
 
+# 3-way 후보 수집 SQL (dense + lexical): RRF 점수는 Python에서 계산
+# sparse_embedding은 Python sparse dot product에 사용
+_SQL_3WAY = """
+WITH dense AS (
+    SELECT id, document_id, chunk_type, content, section_header, page_number, sparse_embedding,
+           ROW_NUMBER() OVER (ORDER BY embedding <=> %(embedding)s::vector) AS rank
+    FROM chunks
+    WHERE embedding IS NOT NULL
+    ORDER BY embedding <=> %(embedding)s::vector
+    LIMIT %(top_n)s
+),
+lexical AS (
+    SELECT id, document_id, chunk_type, content, section_header, page_number, sparse_embedding,
+           ROW_NUMBER() OVER (ORDER BY %(lexical_q)s <<-> content) AS rank
+    FROM chunks
+    WHERE %(lexical_q)s <%% content
+    ORDER BY %(lexical_q)s <<-> content
+    LIMIT %(top_n)s
+)
+SELECT
+    COALESCE(d.id,             l.id)             AS id,
+    COALESCE(d.document_id,    l.document_id)    AS document_id,
+    COALESCE(d.chunk_type,     l.chunk_type)     AS chunk_type,
+    COALESCE(d.content,        l.content)        AS content,
+    COALESCE(d.section_header, l.section_header) AS section_header,
+    COALESCE(d.page_number,    l.page_number)    AS page_number,
+    COALESCE(d.sparse_embedding, l.sparse_embedding) AS sparse_embedding,
+    d.rank  AS dense_rank,
+    l.rank  AS lexical_rank
+FROM dense d
+FULL OUTER JOIN lexical l ON d.id = l.id
+"""
+
+# dense + sparse only (lexical 토큰 없을 때): RRF 점수는 Python에서 계산
+_SQL_DENSE_SPARSE = """
+SELECT id, document_id, chunk_type, content, section_header, page_number, sparse_embedding,
+       ROW_NUMBER() OVER (ORDER BY embedding <=> %(embedding)s::vector) AS dense_rank,
+       NULL::integer AS lexical_rank
+FROM chunks
+WHERE embedding IS NOT NULL
+ORDER BY embedding <=> %(embedding)s::vector
+LIMIT %(top_n)s
+"""
+
 
 def search(
     query_embedding: list[float],
@@ -108,44 +166,125 @@ def search(
     rrf_k: int = 60,
     top_n: int = 40,
     mode: str = "hybrid",
+    query_sparse: dict[str, float] | None = None,
 ) -> list[SearchResult]:
-    """RRF 하이브리드 검색. dense + lexical(word_similarity) 순위를 RRF로 융합.
+    """RRF 하이브리드 검색.
 
-    mode='hybrid': dense + lexical RRF (기본값)
-    mode='dense':  dense cosine 단독 (lexical 토큰 무시)
-    lexical_token: 질문에서 숫자 패턴 추출 → word_similarity로 표 안 숫자 직접 매칭.
+    mode='dense'  : dense cosine 단독
+    mode='hybrid' : query_sparse 없음 → dense + lexical 2-way RRF (SQL)
+                    query_sparse 있음 → dense + lexical + sparse 3-way RRF (Python)
     """
     register_vector(conn)
     lexical_q = _lexical_token(query_text)
-    if mode == "dense":
-        sql = _DENSE_ONLY_SQL
-        lexical_q = None  # dense 전용 모드: lexical 비활성
-    else:
-        sql = _SQL if lexical_q is not None else _DENSE_ONLY_SQL
-    params: dict = {
-        "embedding": query_embedding,
-        "top_n": top_n,
-        "rrf_k": rrf_k,
-        "k": k,
-    }
-    if lexical_q is not None:
-        params["lexical_q"] = lexical_q
-    with conn.cursor() as cur:
-        cur.execute(
-            sql,
-            params,
-        )
-        rows = cur.fetchall()
 
+    # ── dense 단독 모드 ──────────────────────────────────────────────────────
+    if mode == "dense":
+        with conn.cursor() as cur:
+            cur.execute(_DENSE_ONLY_SQL, {"embedding": query_embedding, "k": k})
+            rows = cur.fetchall()
+        return [
+            SearchResult(
+                chunk_id=row[0], document_id=row[1], chunk_type=row[2],
+                content=row[3], section_header=row[4], page_number=row[5],
+                score=float(row[6]), channels=["dense"],
+            )
+            for row in rows
+        ]
+
+    # ── hybrid: 3-way (dense + lexical + sparse) ────────────────────────────
+    if query_sparse is not None:
+        params: dict = {"embedding": query_embedding, "top_n": top_n}
+        if lexical_q is not None:
+            sql = _SQL_3WAY
+            params["lexical_q"] = lexical_q
+        else:
+            sql = _SQL_DENSE_SPARSE
+
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+            rows = cur.fetchall()
+
+        # row 구조: id, doc_id, type, content, section_header, page_number,
+        #           sparse_embedding(JSONB→dict|None), dense_rank(int|None), lexical_rank(int|None)
+        candidates = []
+        for row in rows:
+            chunk_sparse: dict | None = row[6]  # psycopg JSONB → dict 자동 변환
+            candidates.append({
+                "chunk_id":      row[0],
+                "document_id":   row[1],
+                "chunk_type":    row[2],
+                "content":       row[3],
+                "section_header": row[4],
+                "page_number":   row[5],
+                "sparse_score":  _sparse_dot(query_sparse, chunk_sparse),
+                "dense_rank":    row[7],
+                "lexical_rank":  row[8],
+            })
+
+        # sparse 순위 부여 (높은 점수 = 낮은 순위 번호)
+        for rank, c in enumerate(
+            sorted(candidates, key=lambda x: x["sparse_score"], reverse=True), 1
+        ):
+            c["sparse_rank"] = rank
+
+        # 3-way RRF 최종 점수
+        def _rrf(c: dict) -> float:
+            score = 0.0
+            if c["dense_rank"]:
+                score += 1.0 / (rrf_k + c["dense_rank"])
+            if c["lexical_rank"]:
+                score += 1.0 / (rrf_k + c["lexical_rank"])
+            score += 1.0 / (rrf_k + c["sparse_rank"])
+            return score
+
+        candidates.sort(key=_rrf, reverse=True)
+
+        results = []
+        for c in candidates[:k]:
+            channels = ["dense"] if c["dense_rank"] else []
+            if c["lexical_rank"]:
+                channels.append("lexical")
+            if c["sparse_score"] > 0:
+                channels.append("sparse")
+            results.append(SearchResult(
+                chunk_id=c["chunk_id"], document_id=c["document_id"],
+                chunk_type=c["chunk_type"], content=c["content"],
+                section_header=c["section_header"], page_number=c["page_number"],
+                score=round(_rrf(c), 6), channels=channels,
+            ))
+        return results
+
+    # ── hybrid: 2-way (dense + lexical), 기존 경로 ──────────────────────────
+    if lexical_q is not None:
+        sql = _SQL
+        params = {
+            "embedding": query_embedding,
+            "top_n": top_n,
+            "rrf_k": rrf_k,
+            "k": k,
+            "lexical_q": lexical_q,
+        }
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+            rows = cur.fetchall()
+        return [
+            SearchResult(
+                chunk_id=row[0], document_id=row[1], chunk_type=row[2],
+                content=row[3], section_header=row[4], page_number=row[5],
+                score=float(row[6]), channels=["dense", "lexical"],
+            )
+            for row in rows
+        ]
+
+    # lexical 토큰도 없고 sparse도 없으면 dense 단독 폴백
+    with conn.cursor() as cur:
+        cur.execute(_DENSE_ONLY_SQL, {"embedding": query_embedding, "k": k})
+        rows = cur.fetchall()
     return [
         SearchResult(
-            chunk_id=row[0],
-            document_id=row[1],
-            chunk_type=row[2],
-            content=row[3],
-            section_header=row[4],
-            page_number=row[5],
-            score=float(row[6]),
+            chunk_id=row[0], document_id=row[1], chunk_type=row[2],
+            content=row[3], section_header=row[4], page_number=row[5],
+            score=float(row[6]), channels=["dense"],
         )
         for row in rows
     ]

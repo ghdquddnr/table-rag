@@ -5,6 +5,7 @@ CLI: python -m src.index.ingest <pdf_or_dir> [--parser docling|markitdown]
 from __future__ import annotations
 
 import argparse
+import json as _json
 import sys
 from pathlib import Path
 
@@ -56,7 +57,7 @@ def ingest(pdf_path: Path, parser: str = "docling", conn: psycopg.Connection | N
         return 0
 
     texts = [c.content for c in chunks]
-    embeddings = embedder.embed(texts)
+    dense_vecs, sparse_vecs = embedder.embed_full(texts)
 
     # 커넥션 풀을 사용하는 경우 전달받은 conn을 이용하고, CLI 구동 등으로 없으면 새로 생성
     if conn is None:
@@ -80,12 +81,16 @@ def ingest(pdf_path: Path, parser: str = "docling", conn: psycopg.Connection | N
             cur.executemany(
                 """
                 INSERT INTO chunks
-                    (document_id, chunk_type, content, section_header, caption, page_number, embedding)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    (document_id, chunk_type, content, section_header, caption, page_number, embedding, sparse_embedding)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 [
-                    (doc_id, c.chunk_type, c.content, c.section_header, c.caption, c.page_number, emb)
-                    for c, emb in zip(chunks, embeddings, strict=True)
+                    (
+                        doc_id, c.chunk_type, c.content, c.section_header, c.caption,
+                        c.page_number, dense,
+                        _json.dumps(sparse, ensure_ascii=False) if sparse else None,
+                    )
+                    for c, dense, sparse in zip(chunks, dense_vecs, sparse_vecs, strict=True)
                 ],
             )
             

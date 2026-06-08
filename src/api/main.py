@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field
 
 from src.api.condense import CONDENSE_SYSTEM, build_condense_user, clean_condensed
 from src.config import settings
-from src.index.embedder import embed
+from src.index.embedder import embed, embed_full
 from src.index.ingest import ingest as run_ingest
 from src.search.hybrid import SearchResult, _lexical_token
 from src.search.hybrid import search as hybrid_search
@@ -116,9 +116,16 @@ def search(req: SearchRequest) -> SearchResponse:
     if not 1 <= req.k <= 20:
         raise HTTPException(status_code=400, detail="k는 1~20 사이여야 합니다")
 
-    emb = embed([req.query])[0]
+    if req.search_mode == "hybrid":
+        dense_vecs, sparse_vecs = embed_full([req.query])
+        dense_vec, sparse_vec = dense_vecs[0], sparse_vecs[0]
+    else:
+        dense_vec = embed([req.query])[0]
+        sparse_vec = None
     with app.state.pool.connection() as conn:
-        results: list[SearchResult] = hybrid_search(emb, req.query, conn, k=req.k, mode=req.search_mode)
+        results: list[SearchResult] = hybrid_search(
+            dense_vec, req.query, conn, k=req.k, mode=req.search_mode, query_sparse=sparse_vec
+        )
 
     return SearchResponse(
         query=req.query,
@@ -258,9 +265,16 @@ def delete_document(id: int):
 
 # ── Phase 5/6 RAG 채팅 API ──────────────────────────────────────────────────
 def _retrieve_and_search(query: str, k: int = 5, mode: str = "hybrid") -> tuple[list[SearchResult], dict[int, str]]:
-    emb = embed([query])[0]
+    if mode == "hybrid":
+        dense_vecs, sparse_vecs = embed_full([query])
+        dense_vec, sparse_vec = dense_vecs[0], sparse_vecs[0]
+    else:
+        dense_vec = embed([query])[0]
+        sparse_vec = None
     with app.state.pool.connection() as conn:
-        results: list[SearchResult] = hybrid_search(emb, query, conn, k=k, mode=mode)
+        results: list[SearchResult] = hybrid_search(
+            dense_vec, query, conn, k=k, mode=mode, query_sparse=sparse_vec
+        )
         
         # SearchResult에 없는 caption을 DB에서 개별 조회
         chunk_ids = [r.chunk_id for r in results]

@@ -28,15 +28,30 @@ def _get_model():
 
 
 def embed(texts: list[str], batch_size: int = 8) -> list[list[float]]:
-    """텍스트 리스트 → dense 1024차원 임베딩 리스트.
-
-    Args:
-        texts: 임베딩할 텍스트 목록.
-        batch_size: GPU/CPU 메모리에 맞게 조정 (기본 8, CPU면 4 권장).
-    """
+    """텍스트 리스트 → dense 1024차원 임베딩 리스트."""
     if not texts:
         return []
     model = _get_model()
     result = model.encode(texts, batch_size=batch_size, return_dense=True)
     vecs: list[list[float]] = result["dense_vecs"].tolist()
     return vecs
+
+
+def embed_full(
+    texts: list[str], batch_size: int = 8
+) -> tuple[list[list[float]], list[dict[str, float]]]:
+    """텍스트 리스트 → (dense_vecs, sparse_vecs) 동시 반환.
+
+    sparse_vecs: bge-m3 lexical_weights — {token_str: weight} dict 리스트.
+    인제스트 및 3-way 하이브리드 검색 쿼리 임베딩에 사용.
+    """
+    if not texts:
+        return [], []
+    model = _get_model()
+    result = model.encode(texts, batch_size=batch_size, return_dense=True, return_sparse=True)
+    dense_vecs: list[list[float]] = result["dense_vecs"].tolist()
+    # lexical_weights는 defaultdict 리스트 → 직렬화를 위해 일반 dict로 변환
+    sparse_vecs: list[dict[str, float]] = [
+        {k: float(v) for k, v in lw.items()} for lw in result["lexical_weights"]
+    ]
+    return dense_vecs, sparse_vecs

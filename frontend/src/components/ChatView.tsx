@@ -58,6 +58,7 @@ export default function ChatView() {
   const [config, setConfig] = useState<LLMConfig>(DEFAULT_CONFIG);
   const [activeRefId, setActiveRefId] = useState<string | null>(null); // For accordion toggle
   const [searchMode, setSearchMode] = useState<"hybrid" | "dense">("hybrid");
+  const [rerank, setRerank] = useState(false);
 
   const chatEndRef = useRef<HTMLDivElement>(null);
 
@@ -145,7 +146,8 @@ export default function ChatView() {
           api_key: config.apiKey,
           api_url: config.apiUrl,
           stream: true,
-          search_mode: searchMode
+          search_mode: searchMode,
+          rerank: rerank
         })
       });
 
@@ -269,6 +271,26 @@ export default function ChatView() {
             }}
           >
             📊 Dense only
+          </button>
+          {/* Re-rank toggle — cross-encoder 2-stage 파이프라인 */}
+          <div style={{ width: "1px", background: "var(--panel-border)", height: "18px", margin: "0 2px" }} />
+          <button
+            onClick={() => setRerank(v => !v)}
+            title="BGE cross-encoder re-ranking (느림, 정확도 향상)"
+            style={{
+              padding: "4px 12px",
+              borderRadius: "6px",
+              border: "1px solid",
+              borderColor: rerank ? "#a855f7" : "var(--panel-border)",
+              background: rerank ? "rgba(168,85,247,0.15)" : "transparent",
+              color: rerank ? "#a855f7" : "var(--text-muted)",
+              fontSize: "0.75rem",
+              fontWeight: rerank ? "600" : "400",
+              cursor: "pointer",
+              transition: "all 0.2s"
+            }}
+          >
+            ✨ Re-rank
           </button>
         </div>
       </div>

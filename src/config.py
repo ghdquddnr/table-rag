@@ -12,6 +12,7 @@ class Settings(BaseSettings):
 
     embed_model: str = "BAAI/bge-m3"
     embed_dim: int = 1024
+    reranker_model: str = "BAAI/bge-reranker-v2-m3"
 
     ollama_model: str = "gemma4:12b"
     ollama_base_url: str = "http://localhost:11434"

@@ -26,6 +26,7 @@ from src.index.embedder import embed, embed_full
 from src.index.ingest import ingest as run_ingest
 from src.search.hybrid import SearchResult, _lexical_token
 from src.search.hybrid import search as hybrid_search
+from src.search.reranker import rerank as cross_rerank
 
 
 @asynccontextmanager
@@ -68,6 +69,7 @@ class SearchRequest(BaseModel):
     query: str
     k: int = 5
     search_mode: str = Field("hybrid", description="'hybrid' | 'dense'")
+    rerank: bool = Field(False, description="Cross-encoder re-ranking 활성화 (느림, 정확도 향상)")
 
 
 class SearchHit(BaseModel):
@@ -95,6 +97,7 @@ class ChatRequest(BaseModel):
     stream: bool = Field(True, description="스트리밍 스트림 여부")
     search_mode: str = Field("hybrid", description="'hybrid' | 'dense'")
     condense: bool = Field(True, description="멀티턴 후속 질문을 독립 검색 질의로 재작성할지 여부")
+    rerank: bool = Field(False, description="Cross-encoder re-ranking 활성화 (느림, 정확도 향상)")
 
 
 # ── 엔드포인트 ───────────────────────────────────────────────────────────────
@@ -122,10 +125,15 @@ def search(req: SearchRequest) -> SearchResponse:
     else:
         dense_vec = embed([req.query])[0]
         sparse_vec = None
+
+    stage1_k = min(req.k * 4, 40) if req.rerank else req.k
     with app.state.pool.connection() as conn:
         results: list[SearchResult] = hybrid_search(
-            dense_vec, req.query, conn, k=req.k, mode=req.search_mode, query_sparse=sparse_vec
+            dense_vec, req.query, conn, k=stage1_k, mode=req.search_mode, query_sparse=sparse_vec
         )
+
+    if req.rerank and results:
+        results = cross_rerank(req.query, results, top_n=req.k)
 
     return SearchResponse(
         query=req.query,
@@ -264,16 +272,25 @@ def delete_document(id: int):
 
 
 # ── Phase 5/6 RAG 채팅 API ──────────────────────────────────────────────────
-def _retrieve_and_search(query: str, k: int = 5, mode: str = "hybrid") -> tuple[list[SearchResult], dict[int, str]]:
+def _retrieve_and_search(
+    query: str,
+    k: int = 5,
+    mode: str = "hybrid",
+    do_rerank: bool = False,
+) -> tuple[list[SearchResult], dict[int, str]]:
     if mode == "hybrid":
         dense_vecs, sparse_vecs = embed_full([query])
         dense_vec, sparse_vec = dense_vecs[0], sparse_vecs[0]
     else:
         dense_vec = embed([query])[0]
         sparse_vec = None
+
+    # rerank 활성 시 Stage 1에서 더 많은 후보를 가져와 Stage 2에서 추림
+    stage1_k = min(k * 4, 40) if do_rerank else k
+
     with app.state.pool.connection() as conn:
         results: list[SearchResult] = hybrid_search(
-            dense_vec, query, conn, k=k, mode=mode, query_sparse=sparse_vec
+            dense_vec, query, conn, k=stage1_k, mode=mode, query_sparse=sparse_vec
         )
         
         # SearchResult에 없는 caption을 DB에서 개별 조회
@@ -286,6 +303,13 @@ def _retrieve_and_search(query: str, k: int = 5, mode: str = "hybrid") -> tuple[
                     (chunk_ids,)
                 )
                 captions = {row[0]: row[1] for row in cur.fetchall()}
+
+    # Stage 2: Cross-encoder re-ranking (opt-in)
+    if do_rerank and results:
+        results = cross_rerank(query, results, top_n=k)
+    else:
+        results = results[:k]
+
     return results, captions
 
 
@@ -373,7 +397,9 @@ async def chat(req: ChatRequest):
 
     # 1. 하이브리드 검색 수행 (재작성된 질의로 검색, 스레드풀 위임)
     try:
-        results, captions = await run_in_threadpool(_retrieve_and_search, search_query, 5, req.search_mode)
+        results, captions = await run_in_threadpool(
+            _retrieve_and_search, search_query, 5, req.search_mode, req.rerank
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"하이브리드 검색 실패: {str(e)}")
 

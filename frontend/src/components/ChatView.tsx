@@ -26,20 +26,57 @@ interface Message {
   condensedQuery?: string | null; // 멀티턴 후속 질문이 독립 질의로 재작성된 경우
 }
 
-// **bold**, *italic* 패턴만 처리하는 경량 인라인 마크다운 렌더러
-function renderInlineMarkdown(text: string): React.ReactNode {
+// **bold**, *italic*, [출처N] 패턴을 처리하는 인라인 마크다운 렌더러
+function renderInlineMarkdown(
+  text: string,
+  onCitationClick?: (idx: number) => void
+): React.ReactNode {
   const lines = text.split("\n");
   return lines.map((line, lineIdx) => {
     const parts: React.ReactNode[] = [];
-    const regex = /(\*\*[^*\n]+\*\*|\*[^*\n]+\*)/g;
+    // [출처N] 포함한 인라인 패턴
+    const regex = /(\*\*[^*\n]+\*\*|\*[^*\n]+\*|\[출처\d+\])/g;
     let lastIndex = 0;
     let match;
     let key = 0;
     while ((match = regex.exec(line)) !== null) {
       if (match.index > lastIndex) parts.push(<span key={key++}>{line.slice(lastIndex, match.index)}</span>);
       const raw = match[0];
-      if (raw.startsWith("**")) parts.push(<strong key={key++}>{raw.slice(2, -2)}</strong>);
-      else parts.push(<em key={key++}>{raw.slice(1, -1)}</em>);
+      if (raw.startsWith("**")) {
+        parts.push(<strong key={key++}>{raw.slice(2, -2)}</strong>);
+      } else if (raw.startsWith("*")) {
+        parts.push(<em key={key++}>{raw.slice(1, -1)}</em>);
+      } else {
+        // [출처N] 마커
+        const n = parseInt(raw.match(/\d+/)?.[0] || "0", 10);
+        parts.push(
+          <button
+            key={key++}
+            onClick={() => onCitationClick?.(n)}
+            title={`출처 ${n} 보기`}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              padding: "1px 6px",
+              marginLeft: "2px",
+              borderRadius: "4px",
+              border: "1px solid rgba(59,130,246,0.5)",
+              background: "rgba(59,130,246,0.12)",
+              color: "var(--primary)",
+              fontSize: "0.72rem",
+              fontWeight: "600",
+              cursor: "pointer",
+              verticalAlign: "middle",
+              lineHeight: "1.4",
+              transition: "background 0.15s",
+            }}
+            onMouseEnter={e => (e.currentTarget.style.background = "rgba(59,130,246,0.25)")}
+            onMouseLeave={e => (e.currentTarget.style.background = "rgba(59,130,246,0.12)")}
+          >
+            {raw}
+          </button>
+        );
+      }
       lastIndex = match.index + raw.length;
     }
     if (lastIndex < line.length) parts.push(<span key={key++}>{line.slice(lastIndex)}</span>);
@@ -57,6 +94,7 @@ export default function ChatView() {
   const [input, setInput] = useState("");
   const [config, setConfig] = useState<LLMConfig>(DEFAULT_CONFIG);
   const [activeRefId, setActiveRefId] = useState<string | null>(null); // For accordion toggle
+  const [highlightedRefKey, setHighlightedRefKey] = useState<string | null>(null);
   const [searchMode, setSearchMode] = useState<"hybrid" | "dense">("hybrid");
   const [rerank, setRerank] = useState(false);
 
@@ -219,6 +257,20 @@ export default function ChatView() {
     setActiveRefId(prev => (prev === msgId ? null : msgId));
   };
 
+  const handleCitationClick = (msgId: string, citationIdx: number) => {
+    // 아코디언 열기
+    setActiveRefId(msgId);
+    const key = `${msgId}-${citationIdx - 1}`;
+    setHighlightedRefKey(key);
+    // DOM 업데이트 후 스크롤
+    setTimeout(() => {
+      const el = document.getElementById(`ref-card-${key}`);
+      el?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      // 하이라이트 잠시 후 해제
+      setTimeout(() => setHighlightedRefKey(null), 1800);
+    }, 80);
+  };
+
   return (
     <div className="animate-fade-in" style={{ display: "flex", flexDirection: "column", height: "100%", position: "relative" }}>
       {/* Top Bar Status Info */}
@@ -323,7 +375,7 @@ export default function ChatView() {
                 }}
               >
                 {m.text ? (
-                  <div>{renderInlineMarkdown(m.text)}</div>
+                  <div>{renderInlineMarkdown(m.text, isUser ? undefined : (idx) => handleCitationClick(m.id, idx))}</div>
                 ) : m.isStreaming && !m.error ? (
                   <div style={{ display: "flex", gap: "5px", padding: "4px 0", alignItems: "center" }}>
                     <span style={{ width: "6px", height: "6px", background: "var(--primary)", borderRadius: "50%" }} className="animate-pulse-slow" />
@@ -400,14 +452,20 @@ export default function ChatView() {
                       paddingLeft: "8px",
                       borderLeft: "2px solid rgba(59,130,246,0.3)"
                     }}>
-                      {m.references.map((ref, idx) => (
+                      {m.references.map((ref, idx) => {
+                        const refKey = `${m.id}-${idx}`;
+                        const isHighlighted = highlightedRefKey === refKey;
+                        return (
                         <div
                           key={ref.chunk_id}
+                          id={`ref-card-${refKey}`}
                           className="glass-panel"
                           style={{
                             padding: "12px",
                             fontSize: "0.8rem",
-                            background: "rgba(0, 0, 0, 0.2)"
+                            background: isHighlighted ? "rgba(59,130,246,0.15)" : "rgba(0, 0, 0, 0.2)",
+                            borderColor: isHighlighted ? "rgba(59,130,246,0.5)" : undefined,
+                            transition: "background 0.3s, border-color 0.3s",
                           }}
                         >
                           <div style={{
@@ -439,7 +497,8 @@ export default function ChatView() {
                           </div>
                           <MarkdownTable content={ref.content} />
                         </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   )}
                 </div>

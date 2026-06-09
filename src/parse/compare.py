@@ -10,23 +10,48 @@ from src.parse.base import ParseResult
 
 def _render_report(results: list[ParseResult]) -> str:
     lines = ["# Parser Comparison\n"]
+
+    # 요약 비교 표
+    lines += [
+        "## 요약 비교\n",
+        "| 지표 | " + " | ".join(r.parser_name.capitalize() for r in results) + " |",
+        "|------|" + "|".join("------" for _ in results) + "|",
+    ]
+    metrics_list = [r.metrics for r in results]
+    rows = [
+        ("파싱 시간 (초)", [f"{r.parse_time_sec:.2f}s" for r in results]),
+        ("추출된 표 수", [str(m.table_count) for m in metrics_list]),
+        ("전체 셀 수", [str(m.cell_count) for m in metrics_list]),
+        ("유효 셀 수 (CID 제외)", [str(m.valid_cell_count) for m in metrics_list]),
+        ("CID 오염률", [f"{m.cid_contamination_rate:.1%}" for m in metrics_list]),
+        ("숫자 보존률 (유효 셀 중)", [f"{m.numeric_preservation_rate:.1%}" for m in metrics_list]),
+        ("헤더 인식", [str(m.has_header) for m in metrics_list]),
+    ]
+    for label, vals in rows:
+        lines.append(f"| {label} | " + " | ".join(vals) + " |")
+
+    lines.append("")
+
+    # 개별 상세
     for r in results:
         m = r.metrics
         lines += [
-            f"## {r.parser_name.capitalize()}",
-            f"- parse time: {r.parse_time_sec}s",
-            f"- tables found: {m.table_count}",
-            f"- total cells: {m.cell_count}",
-            f"- has header: {m.has_header}",
-            f"- structure score: {m.structure_score}",
+            f"## {r.parser_name.capitalize()}\n",
+            f"- **파싱 시간**: {r.parse_time_sec:.2f}s",
+            f"- **표 수**: {m.table_count}개",
+            f"- **전체 셀**: {m.cell_count}개 / **유효 셀**: {m.valid_cell_count}개",
+            f"- **CID 오염률**: {m.cid_contamination_rate:.1%}",
+            f"- **숫자 보존률**: {m.numeric_preservation_rate:.1%}",
+            f"- **구조 점수**: {m.structure_score}",
             "",
         ]
         if r.error:
             lines.append(f"> ❌ Error: {r.error}\n")
         if r.tables:
-            lines.append("### First Table Sample\n")
-            lines.append(r.tables[0][:500])
+            lines.append("### 첫 번째 표 샘플 (최대 600자)\n")
+            lines.append(r.tables[0][:600])
             lines.append("")
+
     return "\n".join(lines)
 
 

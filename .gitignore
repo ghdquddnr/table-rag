@@ -13,7 +13,6 @@ venv/
 # 대용량 입력/산출 (PDF는 제외, expected.json 은 추적)
 data/samples/*.pdf
 !data/samples/*.expected.json
-eval/parser_comparison.md
 
 # 모델 캐시
 .cache/

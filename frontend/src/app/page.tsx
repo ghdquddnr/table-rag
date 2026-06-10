@@ -13,26 +13,32 @@ export default function Home() {
   const [backendOnline, setBackendOnline] = useState<boolean | null>(null);
   const [chunkCount, setChunkCount] = useState<number>(0);
 
-  const checkBackendHealth = async () => {
-    try {
-      const res = await fetch(`${API_BASE}/health`);
-      if (res.ok) {
-        const data = await res.json();
-        setBackendOnline(true);
-        setChunkCount(data.chunk_count || 0);
-      } else {
-        setBackendOnline(false);
-      }
-    } catch {
-      setBackendOnline(false);
-    }
-  };
-
   // Ping backend on load and every 10 seconds
   useEffect(() => {
+    let cancelled = false;
+
+    const checkBackendHealth = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/health`);
+        if (res.ok) {
+          const data = await res.json();
+          if (cancelled) return;
+          setBackendOnline(true);
+          setChunkCount(data.chunk_count || 0);
+        } else if (!cancelled) {
+          setBackendOnline(false);
+        }
+      } catch {
+        if (!cancelled) setBackendOnline(false);
+      }
+    };
+
     checkBackendHealth();
     const interval = setInterval(checkBackendHealth, 10000);
-    return () => clearInterval(interval);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
   }, []);
 
   return (

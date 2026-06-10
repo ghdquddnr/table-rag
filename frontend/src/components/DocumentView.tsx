@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { Upload, FileText, Trash2, CheckCircle2, AlertCircle, RefreshCw } from "lucide-react";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
@@ -18,39 +18,46 @@ interface DocumentItem {
 export default function DocumentView() {
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
   const [isUploading, setIsUploading] = useState(false);
-  const [isFetching, setIsFetching] = useState(false);
+  const [isFetching, setIsFetching] = useState(true); // 마운트 직후 목록을 불러오므로 true로 시작
   const [parser, setParser] = useState<"docling" | "markitdown">("docling");
   const [uploadStatus, setUploadStatus] = useState<{ type: "success" | "error"; msg: string } | null>(null);
   const [dragActive, setDragActive] = useState(false);
   
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const fetchDocuments = async () => {
+  // setState는 모두 promise 콜백 안에서만 호출 → effect 본문에서 직접 불러도 안전
+  // (react-hooks/set-state-in-effect: 동기 setState만 금지, 비동기 콜백은 허용)
+  const fetchDocuments = useCallback(
+    () =>
+      fetch(`${API_BASE}/api/documents`)
+        .then(res => {
+          if (!res.ok) throw new Error("Failed to fetch documents");
+          return res.json();
+        })
+        .then((data: DocumentItem[]) => setDocuments(data))
+        .catch(e => console.error("Error fetching documents:", e))
+        .finally(() => setIsFetching(false)),
+    []
+  );
+
+  // 사용자 액션(새로고침 버튼, 업로드 후)용: 스피너를 켜고 다시 불러온다
+  const refreshDocuments = useCallback(() => {
     setIsFetching(true);
-    try {
-      const res = await fetch(`${API_BASE}/api/documents`);
-      if (!res.ok) throw new Error("Failed to fetch documents");
-      const data = await res.json();
-      setDocuments(data);
-    } catch (e) {
-      console.error("Error fetching documents:", e);
-    } finally {
-      setIsFetching(false);
-    }
-  };
+    return fetchDocuments();
+  }, [fetchDocuments]);
 
   useEffect(() => {
     fetchDocuments();
-  }, []);
+  }, [fetchDocuments]);
 
   // 분석 중인 문서가 있을 경우 3초마다 상태를 자동 새로고침(폴링)
   useEffect(() => {
     const hasProcessing = documents.some(doc => doc.status === "processing");
     if (!hasProcessing) return;
 
-    const interval = setInterval(fetchDocuments, 3000);
+    const interval = setInterval(refreshDocuments, 3000);
     return () => clearInterval(interval);
-  }, [documents]);
+  }, [documents, refreshDocuments]);
 
   const handleUpload = async (file: File) => {
     if (!file.name.endsWith(".pdf")) {
@@ -87,7 +94,7 @@ export default function DocumentView() {
         type: "success",
         msg: `성공! 파일 '${data.filename}'의 분석 및 인제스트가 백그라운드에서 실행 중입니다.`,
       });
-      fetchDocuments();
+      refreshDocuments();
     } catch (e) {
       const errorMsg = e instanceof Error ? e.message : "업로드 실패";
       setUploadStatus({ type: "error", msg: errorMsg });
@@ -262,7 +269,7 @@ export default function DocumentView() {
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
           <h3 style={{ fontSize: "1.05rem", fontWeight: "600" }}>인제스트 문서 라이브러리</h3>
           <button 
-            onClick={fetchDocuments} 
+            onClick={refreshDocuments}
             disabled={isFetching}
             className="btn btn-secondary" 
             style={{ padding: "6px 10px", fontSize: "0.75rem" }}

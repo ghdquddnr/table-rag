@@ -21,25 +21,26 @@ interface OllamaTag {
   name: string;
 }
 
+// 저장된 설정을 읽어 초기값으로 사용 (SSR 프리렌더 시에는 localStorage가 없으므로 기본값)
+function loadSavedConfig(): LLMConfig {
+  if (typeof window === "undefined") return DEFAULT_CONFIG;
+  const saved = localStorage.getItem("table_rag_llm_config");
+  if (saved) {
+    try {
+      return { ...DEFAULT_CONFIG, ...JSON.parse(saved) };
+    } catch (e) {
+      console.error("Failed to parse saved LLM config", e);
+    }
+  }
+  return DEFAULT_CONFIG;
+}
+
 export default function SettingsView() {
-  const [config, setConfig] = useState<LLMConfig>(DEFAULT_CONFIG);
+  const [config, setConfig] = useState<LLMConfig>(loadSavedConfig);
   const [ollamaModels, setOllamaModels] = useState<string[]>([]);
   const [isLoadingModels, setIsLoadingModels] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [connError, setConnError] = useState<string | null>(null);
-
-  // Load config from LocalStorage on mount
-  useEffect(() => {
-    const saved = localStorage.getItem("table_rag_llm_config");
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        setConfig(prev => ({ ...prev, ...parsed }));
-      } catch (e) {
-        console.error("Failed to parse saved LLM config", e);
-      }
-    }
-  }, []);
 
   // Fetch Ollama models when provider or apiUrl changes
   useEffect(() => {

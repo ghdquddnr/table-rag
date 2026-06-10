@@ -90,8 +90,14 @@ function renderInlineMarkdown(
   });
 }
 
+const WELCOME_MESSAGE: Message = {
+  id: "welcome",
+  role: "assistant",
+  text: "안녕하세요! 표·숫자에 특화된 한국어 하이브리드 RAG 시스템입니다. 업로드한 PDF 보고서에 들어 있는 재무 정보나 통계 표 데이터에 대해 질문해 보세요. (예: '부채비율 44.3%를 기록한 시점의 자산총계는?')"
+};
+
 export default function ChatView() {
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [messages, setMessages] = useState<Message[]>([WELCOME_MESSAGE]);
   const [input, setInput] = useState("");
   const [config, setConfig] = useState<LLMConfig>(DEFAULT_CONFIG);
   const [activeRefId, setActiveRefId] = useState<string | null>(null); // For accordion toggle
@@ -121,17 +127,6 @@ export default function ChatView() {
     // SettingsView에서 저장 시 발생하는 storage 이벤트 수신
     window.addEventListener("storage", loadConfig);
     return () => window.removeEventListener("storage", loadConfig);
-  }, []);
-
-  // Add welcome message on mount
-  useEffect(() => {
-    setMessages([
-      {
-        id: "welcome",
-        role: "assistant",
-        text: "안녕하세요! 표·숫자에 특화된 한국어 하이브리드 RAG 시스템입니다. 업로드한 PDF 보고서에 들어 있는 재무 정보나 통계 표 데이터에 대해 질문해 보세요. (예: '부채비율 44.3%를 기록한 시점의 자산총계는?')"
-      }
-    ]);
   }, []);
 
   // Auto scroll to bottom

@@ -1,5 +1,7 @@
 # table-rag
 
+[![eval](https://github.com/ghdquddnr/table-rag/actions/workflows/eval.yml/badge.svg)](https://github.com/ghdquddnr/table-rag/actions/workflows/eval.yml)
+
 **PDF 표·숫자에 특화한 한국어 하이브리드 RAG.**  
 Docling 파싱 + 표 인지 청킹 + pg_trgm 하이브리드 검색(RRF)으로 벡터 검색의 숫자 매칭 한계를 정량적으로 해결한 포트폴리오 프로젝트.
 
@@ -71,12 +73,16 @@ dense + lexical 두 채널의 순위를 RRF(k=60)로 융합한다. 점수 스케
 
 | 지표 | vector-only | **hybrid (RRF)** | delta |
 |------|:-----------:|:----------------:|:-----:|
-| Recall@1 | 0.700 | **1.000** | **+0.300** |
+| Recall@1 | 0.500 | **1.000** | **+0.500** |
 | Recall@5 | 1.000 | 1.000 | — |
-| MRR@10 | 0.820 | **1.000** | **+0.180** |
+| MRR@10 | 0.720 | **1.000** | **+0.280** |
 | 숫자정답률@5 | 1.000 | 1.000 | — |
 
 vector-only는 의미적으로 유사한 텍스트 청크를 표보다 먼저 반환하는 반면, hybrid는 수치 토큰 매칭으로 정확한 표 청크를 rank 1에 올렸다.
+
+이 수치는 **PR마다 GitHub Actions로 자동 재측정**된다 — 고정 fixture(`eval/fixtures/`)와 사전 계산된
+질의 임베딩(`eval/golden_embeddings.json`)으로 모델 다운로드 없이 수십 초 안에 완료되며,
+hybrid Recall@1·MRR이 기준값 아래로 떨어지면 CI가 실패한다 (회귀 게이트).
 
 ---
 

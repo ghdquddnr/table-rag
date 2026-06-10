@@ -2,9 +2,17 @@
 
 지표: Recall@1, Recall@5, Recall@10, MRR@10, 숫자정답률
 실행: python -m eval.run_eval
+
+CI 모드 (백로그 #8):
+  python -m eval.run_eval --embed-cache eval/golden_embeddings.json \
+      --min-recall1 0.9 --min-mrr 0.9 --summary "$GITHUB_STEP_SUMMARY"
+  --embed-cache: 사전 계산된 질의 임베딩 사용 (bge-m3 모델 로드 생략)
+  --min-*      : hybrid 지표가 임계값 미만이면 exit 1 (회귀 게이트)
+  --summary    : 마크다운 결과표를 파일에 append (GitHub Step Summary 용)
 """
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 from dataclasses import dataclass, field
@@ -186,10 +194,42 @@ def _print_table(vector: EvalResult, hybrid: EvalResult) -> None:
     print("=" * 65)
 
 
+def _write_summary(path: Path, vector: EvalResult, hybrid: EvalResult) -> None:
+    """GitHub Step Summary 용 마크다운 결과표를 append."""
+    rows = [
+        ("Recall@1", vector.recall_at[1], hybrid.recall_at[1]),
+        ("Recall@5", vector.recall_at[5], hybrid.recall_at[5]),
+        ("Recall@10", vector.recall_at[10], hybrid.recall_at[10]),
+        ("MRR@10", vector.mrr, hybrid.mrr),
+        ("숫자정답률@5", vector.number_hit_rate, hybrid.number_hit_rate),
+    ]
+    lines = [
+        "## Eval — vector-only vs hybrid (RRF, k=60)",
+        "",
+        "| 지표 | vector-only | hybrid | delta |",
+        "| --- | ---: | ---: | ---: |",
+    ]
+    for name, v, h in rows:
+        lines.append(f"| {name} | {v:.3f} | {h:.3f} | {h - v:+.3f} |")
+    lines.append("")
+    with path.open("a", encoding="utf-8", newline="\n") as f:
+        f.write("\n".join(lines) + "\n")
+
+
 # ── 메인 ────────────────────────────────────────────────────────────────────
 def main() -> None:
     from src.config import settings
-    from src.index.embedder import embed
+
+    ap = argparse.ArgumentParser(description="vector-only vs hybrid 검색 품질 평가")
+    ap.add_argument("--embed-cache", type=Path, default=None,
+                    help="사전 계산된 질의 임베딩 JSON (CI 용, bge-m3 로드 생략)")
+    ap.add_argument("--min-recall1", type=float, default=None,
+                    help="hybrid Recall@1 최소 임계값 (미만이면 exit 1)")
+    ap.add_argument("--min-mrr", type=float, default=None,
+                    help="hybrid MRR@10 최소 임계값 (미만이면 exit 1)")
+    ap.add_argument("--summary", type=Path, default=None,
+                    help="마크다운 결과표를 append 할 파일 경로")
+    args = ap.parse_args()
 
     items = [
         GoldenItem(**json.loads(line))
@@ -198,9 +238,18 @@ def main() -> None:
     ]
     print(f"Golden set: {len(items)}개 질문 로드")
 
-    questions = [it.question for it in items]
-    print("임베딩 중...")
-    embeddings = embed(questions)
+    if args.embed_cache:
+        cache = json.loads(args.embed_cache.read_text(encoding="utf-8"))
+        missing = [it.id for it in items if it.id not in cache]
+        if missing:
+            sys.exit(f"임베딩 캐시에 없는 질문: {missing} — eval/make_embed_cache.py 재실행 필요")
+        embeddings = [cache[it.id] for it in items]
+        print(f"임베딩 캐시 사용: {args.embed_cache}")
+    else:
+        from src.index.embedder import embed  # 무거운 import 지연
+
+        print("임베딩 중...")
+        embeddings = embed([it.question for it in items])
     print("검색 중...")
 
     with psycopg.connect(settings.db_dsn) as conn:
@@ -219,6 +268,18 @@ def main() -> None:
     hyb_eval.method = "hybrid"
 
     _print_table(vec_eval, hyb_eval)
+
+    if args.summary:
+        _write_summary(args.summary, vec_eval, hyb_eval)
+
+    # 회귀 게이트: hybrid 지표가 임계값 미만이면 실패
+    failures = []
+    if args.min_recall1 is not None and hyb_eval.recall_at[1] < args.min_recall1:
+        failures.append(f"Recall@1 {hyb_eval.recall_at[1]:.3f} < {args.min_recall1}")
+    if args.min_mrr is not None and hyb_eval.mrr < args.min_mrr:
+        failures.append(f"MRR@10 {hyb_eval.mrr:.3f} < {args.min_mrr}")
+    if failures:
+        sys.exit("FAIL (회귀 감지): " + ", ".join(failures))
 
 
 if __name__ == "__main__":

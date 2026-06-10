@@ -34,6 +34,7 @@ select = ["E", "F", "I", "UP", "B"]
 [tool.ruff.lint.per-file-ignores]
 "src/api/main.py" = ["E501", "B008", "B904"]  # HTML 인라인 스트링 + FastAPI File()/Form() 패턴 + except-raise 체인
 "src/index/ingest.py" = ["E501"]  # SQL 인라인 스트링의 긴 줄 허용
+"eval/make_fixture.py" = ["E501"]  # SQL 인라인 스트링의 긴 줄 허용
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

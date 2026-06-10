@@ -1,0 +1,66 @@
+# 백로그 #8: PR마다 검색 품질(Recall@1·MRR) 자동 측정.
+#
+# eval 잡은 고정 fixture(eval/fixtures/eval_chunks.sql)와 사전 계산된 질의 임베딩
+# (eval/golden_embeddings.json)을 사용한다 — bge-m3 모델 다운로드 없이 수십 초 안에 완료.
+# 골든셋·청킹이 바뀌면 eval/make_fixture.py, eval/make_embed_cache.py 로 재생성할 것.
+name: eval
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+jobs:
+  lint-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      # 테스트·린트는 무거운 의존성(docling, FlagEmbedding) 없이 동작하도록 설계됨 (CLAUDE.md §8)
+      - name: Install minimal deps
+        run: pip install "psycopg[binary]" pgvector pydantic-settings ruff pytest
+      - name: Lint
+        run: ruff check .
+      - name: Test
+        run: pytest -q
+
+  eval:
+    runs-on: ubuntu-latest
+    services:
+      db:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: rag
+          POSTGRES_PASSWORD: rag
+          POSTGRES_DB: ragdb
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U rag -d ragdb"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install minimal deps
+        run: pip install "psycopg[binary]" pgvector pydantic-settings
+      - name: Load schema + eval fixture
+        env:
+          PGPASSWORD: rag
+        run: |
+          psql -h localhost -U rag -d ragdb -v ON_ERROR_STOP=1 -f db/init.sql
+          psql -h localhost -U rag -d ragdb -v ON_ERROR_STOP=1 -f eval/fixtures/eval_chunks.sql
+      - name: Run eval (Recall@1·MRR 회귀 게이트)
+        run: |
+          python -m eval.run_eval \
+            --embed-cache eval/golden_embeddings.json \
+            --min-recall1 1.0 \
+            --min-mrr 1.0 \
+            --summary "$GITHUB_STEP_SUMMARY"

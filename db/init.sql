@@ -7,8 +7,14 @@ CREATE TABLE IF NOT EXISTS documents (
     source    TEXT        NOT NULL,
     parser    TEXT        NOT NULL,  -- 'docling' | 'markitdown'
     status    TEXT        NOT NULL DEFAULT 'pending',  -- 'pending' | 'processing' | 'completed' | 'failed'
+    file_hash TEXT,                  -- 원본 파일 SHA-256 (중복 업로드 방지)
     created_at TIMESTAMPTZ DEFAULT now()
 );
+
+-- 중복 업로드 방지: 동일 해시 문서는 1건만 허용 (실패 문서는 재업로드 가능하도록 제외)
+CREATE UNIQUE INDEX IF NOT EXISTS documents_file_hash_uniq
+    ON documents (file_hash)
+    WHERE file_hash IS NOT NULL AND status != 'failed';
 
 -- Chunks table
 -- chunk_type: 'table' | 'text'

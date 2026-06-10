@@ -17,12 +17,14 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pgvector.psycopg import register_vector
+from psycopg import errors as pg_errors
 from psycopg_pool import ConnectionPool
 from pydantic import BaseModel, Field
 
 from src.api.condense import CONDENSE_SYSTEM, build_condense_user, clean_condensed
 from src.config import settings
 from src.index.embedder import embed, embed_full
+from src.index.ingest import file_sha256, find_duplicate
 from src.index.ingest import ingest as run_ingest
 from src.search.hybrid import SearchResult, _lexical_token
 from src.search.hybrid import search as hybrid_search
@@ -217,16 +219,42 @@ async def upload_document(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"파일 임시 저장 오류: {str(e)}")
 
+    # 파일 해시 기반 중복 업로드 방지 (백로그 #7)
+    file_hash = file_sha256(file_path)
+    try:
+        with app.state.pool.connection() as conn:
+            dup = find_duplicate(file_hash, conn)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"중복 문서 확인 실패: {str(e)}")
+
+    if dup:
+        dup_id, dup_source, dup_status = dup
+        # 방금 저장한 파일이 기존 문서의 원본 그 자체가 아닐 때만 디스크 정리
+        if str(file_path) != dup_source and file_path.exists():
+            file_path.unlink()
+        status_label = "분석 중" if dup_status == "processing" else "적재 완료"
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"이미 업로드된 문서입니다: '{Path(dup_source).name}' "
+                f"(문서 ID {dup_id}, {status_label}). 동일한 내용의 파일은 다시 적재하지 않습니다."
+            ),
+        )
+
     try:
         # DB 레코드를 'processing' 상태로 우선 생성
         with app.state.pool.connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "INSERT INTO documents (source, parser, status) VALUES (%s, %s, 'processing') RETURNING id",
-                    (str(file_path), parser),
+                    "INSERT INTO documents (source, parser, status, file_hash)"
+                    " VALUES (%s, %s, 'processing', %s) RETURNING id",
+                    (str(file_path), parser, file_hash),
                 )
                 doc_id = cur.fetchone()[0]
             conn.commit()
+    except pg_errors.UniqueViolation:
+        # 동시 업로드 경합으로 유니크 인덱스에 걸린 경우 — 내용이 같으므로 파일은 남겨둔다
+        raise HTTPException(status_code=409, detail="이미 업로드된 문서입니다. 동일한 내용의 파일은 다시 적재하지 않습니다.")
     except Exception as e:
         if file_path.exists():
             file_path.unlink()

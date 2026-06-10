@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useRef } from "react";
-import { Send, BookOpen, AlertCircle, Layers, Search } from "lucide-react";
+import { Send, BookOpen, AlertCircle, Layers, Search, Square } from "lucide-react";
 import { LLMConfig, DEFAULT_CONFIG } from "./SettingsView";
 import MarkdownTable from "./MarkdownTable";
 
@@ -23,6 +23,7 @@ interface Message {
   references?: Reference[];
   error?: string;
   isStreaming?: boolean;
+  aborted?: boolean; // 사용자가 스트리밍을 중단한 경우
   condensedQuery?: string | null; // 멀티턴 후속 질문이 독립 질의로 재작성된 경우
 }
 
@@ -99,6 +100,8 @@ export default function ChatView() {
   const [rerank, setRerank] = useState(false);
 
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  const isStreaming = messages.some(m => m.isStreaming);
 
   // Load config on mount + localStorage 변경 시 재동기화
   useEffect(() => {
@@ -136,9 +139,14 @@ export default function ChatView() {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  // 스트리밍 중단 (백로그 #9): fetch + 스트림 리딩을 AbortController로 취소
+  const handleAbort = () => {
+    abortRef.current?.abort();
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!input.trim()) return;
+    if (!input.trim() || isStreaming) return;
 
     const queryText = input.trim();
     setInput("");
@@ -170,9 +178,13 @@ export default function ChatView() {
         content: m.text
       }));
 
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     try {
       const res = await fetch(`${API_BASE}/api/chat`, {
         method: "POST",
+        signal: controller.signal,
         headers: {
           "Content-Type": "application/json"
         },
@@ -246,10 +258,19 @@ export default function ChatView() {
         }
       }
     } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : "답변 생성 실패";
-      setMessages(prev => 
-        prev.map(m => m.id === assistantMsgId ? { ...m, error: errorMsg, isStreaming: false } : m)
-      );
+      if (err instanceof DOMException && err.name === "AbortError") {
+        // 사용자 중단: 부분 응답은 유지하고 중단 표시만 남긴다
+        setMessages(prev =>
+          prev.map(m => m.id === assistantMsgId ? { ...m, isStreaming: false, aborted: true } : m)
+        );
+      } else {
+        const errorMsg = err instanceof Error ? err.message : "답변 생성 실패";
+        setMessages(prev =>
+          prev.map(m => m.id === assistantMsgId ? { ...m, error: errorMsg, isStreaming: false } : m)
+        );
+      }
+    } finally {
+      abortRef.current = null;
     }
   };
 
@@ -383,6 +404,13 @@ export default function ChatView() {
                     <span style={{ width: "6px", height: "6px", background: "var(--primary)", borderRadius: "50%", animationDelay: "0.4s" }} className="animate-pulse-slow" />
                   </div>
                 ) : null}
+
+                {m.aborted && (
+                  <div style={{ display: "flex", alignItems: "center", gap: "6px", color: "var(--text-dim)", fontSize: "0.78rem", marginTop: m.text ? "8px" : "0", fontStyle: "italic" }}>
+                    <Square size={11} />
+                    <span>응답이 중단되었습니다</span>
+                  </div>
+                )}
 
                 {m.error && (
                   <div style={{ display: "flex", alignItems: "center", gap: "6px", color: "#f87171", fontSize: "0.85rem", marginTop: m.text ? "8px" : "0" }}>
@@ -525,10 +553,27 @@ export default function ChatView() {
           className="input-field"
           style={{ flex: 1 }}
         />
-        <button type="submit" className="btn btn-primary" style={{ padding: "0 22px" }}>
-          <Send size={16} />
-          <span>전송</span>
-        </button>
+        {isStreaming ? (
+          <button
+            type="button"
+            onClick={handleAbort}
+            className="btn"
+            style={{
+              padding: "0 22px",
+              background: "rgba(239,68,68,0.12)",
+              border: "1px solid rgba(239,68,68,0.45)",
+              color: "#f87171",
+            }}
+          >
+            <Square size={14} />
+            <span>중단</span>
+          </button>
+        ) : (
+          <button type="submit" className="btn btn-primary" style={{ padding: "0 22px" }}>
+            <Send size={16} />
+            <span>전송</span>
+          </button>
+        )}
       </form>
     </div>
   );

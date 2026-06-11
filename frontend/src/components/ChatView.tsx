@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useRef } from "react";
-import { Send, BookOpen, AlertCircle, Layers, Search, Square } from "lucide-react";
+import { Send, BookOpen, AlertCircle, Search, Square, MessageSquare, Sparkles } from "lucide-react";
 import { LLMConfig, DEFAULT_CONFIG, fetchLLMConfig } from "./SettingsView";
 import MarkdownTable from "./MarkdownTable";
 
@@ -26,6 +26,13 @@ interface Message {
   aborted?: boolean; // 사용자가 스트리밍을 중단한 경우
   condensedQuery?: string | null; // 멀티턴 후속 질문이 독립 질의로 재작성된 경우
 }
+
+// 빈 채팅 상태에서 보여줄 예시 질문 (골든셋 기반)
+const SUGGESTED_QUESTIONS = [
+  "부채비율 44.3%를 기록한 시점의 자산총계는?",
+  "영업이익이 37억원인 분기의 IT 부문 매출은?",
+  "수주잔고가 0.70조원인 분기 다음 분기 수주잔고는?",
+];
 
 // **bold**, *italic*, [출처N] 패턴을 처리하는 인라인 마크다운 렌더러
 function renderInlineMarkdown(
@@ -53,26 +60,9 @@ function renderInlineMarkdown(
         parts.push(
           <button
             key={key++}
+            className="citation-chip"
             onClick={() => onCitationClick?.(n)}
             title={`출처 ${n} 보기`}
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              padding: "1px 6px",
-              marginLeft: "2px",
-              borderRadius: "4px",
-              border: "1px solid rgba(59,130,246,0.5)",
-              background: "rgba(59,130,246,0.12)",
-              color: "var(--primary)",
-              fontSize: "0.72rem",
-              fontWeight: "600",
-              cursor: "pointer",
-              verticalAlign: "middle",
-              lineHeight: "1.4",
-              transition: "background 0.15s",
-            }}
-            onMouseEnter={e => (e.currentTarget.style.background = "rgba(59,130,246,0.25)")}
-            onMouseLeave={e => (e.currentTarget.style.background = "rgba(59,130,246,0.12)")}
           >
             {raw}
           </button>
@@ -90,14 +80,8 @@ function renderInlineMarkdown(
   });
 }
 
-const WELCOME_MESSAGE: Message = {
-  id: "welcome",
-  role: "assistant",
-  text: "안녕하세요! 표·숫자에 특화된 한국어 하이브리드 RAG 시스템입니다. 업로드한 PDF 보고서에 들어 있는 재무 정보나 통계 표 데이터에 대해 질문해 보세요. (예: '부채비율 44.3%를 기록한 시점의 자산총계는?')"
-};
-
 export default function ChatView() {
-  const [messages, setMessages] = useState<Message[]>([WELCOME_MESSAGE]);
+  const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [config, setConfig] = useState<LLMConfig>(DEFAULT_CONFIG);
   const [activeRefId, setActiveRefId] = useState<string | null>(null); // For accordion toggle
@@ -107,6 +91,7 @@ export default function ChatView() {
 
   const chatEndRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const msgSeqRef = useRef(0); // 메시지 ID 시퀀스 (render-pure 유지를 위해 Date.now 대신 사용)
   const isStreaming = messages.some(m => m.isStreaming);
 
   // 마운트 시 DB에 저장된 설정 로드 + SettingsView 저장 시 발행되는 이벤트로 재동기화
@@ -131,15 +116,12 @@ export default function ChatView() {
     abortRef.current?.abort();
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!input.trim() || isStreaming) return;
-
-    const queryText = input.trim();
-    setInput("");
+  const sendQuery = async (queryText: string) => {
+    if (!queryText.trim() || isStreaming) return;
 
     // Create user message
-    const userMsgId = `user-${Date.now()}`;
+    const seq = ++msgSeqRef.current;
+    const userMsgId = `user-${seq}`;
     const userMessage: Message = {
       id: userMsgId,
       role: "user",
@@ -147,7 +129,7 @@ export default function ChatView() {
     };
 
     // Create placeholder assistant message
-    const assistantMsgId = `assistant-${Date.now()}`;
+    const assistantMsgId = `assistant-${seq}`;
     const assistantMessage: Message = {
       id: assistantMsgId,
       role: "assistant",
@@ -157,9 +139,9 @@ export default function ChatView() {
 
     setMessages(prev => [...prev, userMessage, assistantMessage]);
 
-    // welcome 메시지 및 에러가 난 메시지를 제외한 과거 대화 히스토리 조립
+    // 에러가 난 메시지를 제외한 과거 대화 히스토리 조립
     const historyList = messages
-      .filter(m => m.id !== "welcome" && m.text && !m.error)
+      .filter(m => m.text && !m.error)
       .map(m => ({
         role: m.role,
         content: m.text
@@ -198,7 +180,7 @@ export default function ChatView() {
 
       const decoder = new TextDecoder();
       let buffer = "";
-      
+
       while (true) {
         const { value, done } = await reader.read();
         if (done) break;
@@ -214,7 +196,7 @@ export default function ChatView() {
           if (cleanLine.startsWith("data: ")) {
             const dataStr = cleanLine.slice(6).trim();
             if (dataStr === "[DONE]") {
-              setMessages(prev => 
+              setMessages(prev =>
                 prev.map(m => m.id === assistantMsgId ? { ...m, isStreaming: false } : m)
               );
               break;
@@ -229,12 +211,12 @@ export default function ChatView() {
                 );
               } else if (parsed.type === "content") {
                 // content token received
-                setMessages(prev => 
+                setMessages(prev =>
                   prev.map(m => m.id === assistantMsgId ? { ...m, text: m.text + parsed.text } : m)
                 );
               } else if (parsed.type === "error") {
                 // error received
-                setMessages(prev => 
+                setMessages(prev =>
                   prev.map(m => m.id === assistantMsgId ? { ...m, error: parsed.text, isStreaming: false } : m)
                 );
               }
@@ -261,6 +243,14 @@ export default function ChatView() {
     }
   };
 
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const queryText = input.trim();
+    if (!queryText) return;
+    setInput("");
+    sendQuery(queryText);
+  };
+
   const handleToggleRef = (msgId: string) => {
     setActiveRefId(prev => (prev === msgId ? null : msgId));
   };
@@ -280,284 +270,233 @@ export default function ChatView() {
   };
 
   return (
-    <div className="animate-fade-in" style={{ display: "flex", flexDirection: "column", height: "100%", position: "relative" }}>
-      {/* Top Bar Status Info */}
-      <div style={{
-        display: "flex", 
-        justifyContent: "space-between", 
-        alignItems: "center", 
-        padding: "10px 20px", 
-        background: "rgba(255,255,255,0.01)", 
-        borderBottom: "1px solid var(--panel-border)",
-        fontSize: "0.8rem",
-        color: "var(--text-muted)"
-      }}>
-        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-          <Layers size={14} style={{ color: "var(--primary)" }} />
-          <span>Active LLM Model: <strong style={{ color: "var(--text-main)" }}>{config.provider.toUpperCase()} ({config.model})</strong></span>
+    <div className="view animate-fade-in">
+      {/* Header */}
+      <div className="view-header" style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", paddingBottom: "16px", borderBottom: "1px solid var(--border)" }}>
+        <div>
+          <h2>RAG 채팅</h2>
+          <p className="desc">
+            {config.provider} · {config.model}
+          </p>
         </div>
-        {/* Search Mode Toggle */}
-        <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+          <div className="seg" role="group" aria-label="검색 모드">
+            <button className={searchMode === "hybrid" ? "on" : ""} onClick={() => setSearchMode("hybrid")}>
+              Hybrid
+            </button>
+            <button className={searchMode === "dense" ? "on" : ""} onClick={() => setSearchMode("dense")}>
+              Dense
+            </button>
+          </div>
           <button
-            onClick={() => setSearchMode("hybrid")}
-            style={{
-              padding: "4px 12px",
-              borderRadius: "6px",
-              border: "1px solid",
-              borderColor: searchMode === "hybrid" ? "var(--accent)" : "var(--panel-border)",
-              background: searchMode === "hybrid" ? "rgba(16,185,129,0.15)" : "transparent",
-              color: searchMode === "hybrid" ? "var(--accent)" : "var(--text-muted)",
-              fontSize: "0.75rem",
-              fontWeight: searchMode === "hybrid" ? "600" : "400",
-              cursor: "pointer",
-              transition: "all 0.2s"
-            }}
-          >
-            🔀 Hybrid
-          </button>
-          <button
-            onClick={() => setSearchMode("dense")}
-            style={{
-              padding: "4px 12px",
-              borderRadius: "6px",
-              border: "1px solid",
-              borderColor: searchMode === "dense" ? "var(--primary)" : "var(--panel-border)",
-              background: searchMode === "dense" ? "rgba(59,130,246,0.15)" : "transparent",
-              color: searchMode === "dense" ? "var(--primary)" : "var(--text-muted)",
-              fontSize: "0.75rem",
-              fontWeight: searchMode === "dense" ? "600" : "400",
-              cursor: "pointer",
-              transition: "all 0.2s"
-            }}
-          >
-            📊 Dense only
-          </button>
-          {/* Re-rank toggle — cross-encoder 2-stage 파이프라인 */}
-          <div style={{ width: "1px", background: "var(--panel-border)", height: "18px", margin: "0 2px" }} />
-          <button
+            className={`toggle-chip ${rerank ? "on" : ""}`}
             onClick={() => setRerank(v => !v)}
             title="BGE cross-encoder re-ranking (느림, 정확도 향상)"
-            style={{
-              padding: "4px 12px",
-              borderRadius: "6px",
-              border: "1px solid",
-              borderColor: rerank ? "#a855f7" : "var(--panel-border)",
-              background: rerank ? "rgba(168,85,247,0.15)" : "transparent",
-              color: rerank ? "#a855f7" : "var(--text-muted)",
-              fontSize: "0.75rem",
-              fontWeight: rerank ? "600" : "400",
-              cursor: "pointer",
-              transition: "all 0.2s"
-            }}
           >
-            ✨ Re-rank
+            <Sparkles size={12} />
+            Re-rank
           </button>
         </div>
       </div>
 
-      {/* Messages Log area */}
-      <div style={{ flex: 1, overflowY: "auto", padding: "20px", display: "flex", flexDirection: "column", gap: "20px" }}>
-        {messages.map((m) => {
-          const isUser = m.role === "user";
-          return (
-            <div key={m.id} style={{
-              display: "flex",
-              flexDirection: "column",
-              alignItems: isUser ? "flex-end" : "flex-start",
-              maxWidth: "85%",
-              alignSelf: isUser ? "flex-end" : "flex-start"
+      {/* Messages */}
+      <div style={{ flex: 1, overflowY: "auto", padding: "20px 32px", display: "flex", flexDirection: "column", gap: "18px", minHeight: 0 }}>
+        {messages.length === 0 ? (
+          <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: "8px" }}>
+            <div style={{
+              width: "44px", height: "44px", borderRadius: "12px", background: "var(--surface-2)",
+              border: "1px solid var(--border)", display: "flex", alignItems: "center", justifyContent: "center",
+              color: "var(--text-2)", marginBottom: "6px",
             }}>
-              {/* Message bubble */}
-              <div 
-                className="glass-panel"
-                style={{
-                  padding: "14px 18px",
-                  borderRadius: isUser ? "16px 16px 4px 16px" : "16px 16px 16px 4px",
-                  background: isUser ? "linear-gradient(135deg, rgba(59,130,246,0.2), rgba(37,99,235,0.25))" : "rgba(255,255,255,0.02)",
-                  borderColor: isUser ? "rgba(59,130,246,0.3)" : "var(--panel-border)",
-                  color: "var(--text-main)",
-                  fontSize: "0.95rem",
-                  lineHeight: "1.6",
-                  overflowWrap: "break-word",
-                  boxShadow: isUser ? "0 4px 15px rgba(59,130,246,0.1)" : "var(--card-shadow)"
-                }}
-              >
-                {m.text ? (
-                  <div>{renderInlineMarkdown(m.text, isUser ? undefined : (idx) => handleCitationClick(m.id, idx))}</div>
-                ) : m.isStreaming && !m.error ? (
-                  <div style={{ display: "flex", gap: "5px", padding: "4px 0", alignItems: "center" }}>
-                    <span style={{ width: "6px", height: "6px", background: "var(--primary)", borderRadius: "50%" }} className="animate-pulse-slow" />
-                    <span style={{ width: "6px", height: "6px", background: "var(--primary)", borderRadius: "50%", animationDelay: "0.2s" }} className="animate-pulse-slow" />
-                    <span style={{ width: "6px", height: "6px", background: "var(--primary)", borderRadius: "50%", animationDelay: "0.4s" }} className="animate-pulse-slow" />
-                  </div>
-                ) : null}
+              <MessageSquare size={20} />
+            </div>
+            <div style={{ fontSize: "1.02rem", fontWeight: 600 }}>문서 속 표·숫자에 대해 물어보세요</div>
+            <p style={{ fontSize: "0.82rem", color: "var(--text-2)", maxWidth: "380px", textAlign: "center" }}>
+              업로드한 PDF에서 하이브리드 검색으로 근거를 찾아 출처와 함께 답변합니다.
+            </p>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "8px", justifyContent: "center", marginTop: "14px", maxWidth: "560px" }}>
+              {SUGGESTED_QUESTIONS.map(q => (
+                <button key={q} className="suggest-chip" onClick={() => sendQuery(q)}>
+                  {q}
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : (
+          messages.map((m) => {
+            const isUser = m.role === "user";
+            return (
+              <div key={m.id} style={{
+                display: "flex",
+                flexDirection: "column",
+                alignItems: isUser ? "flex-end" : "flex-start",
+                maxWidth: "78%",
+                alignSelf: isUser ? "flex-end" : "flex-start"
+              }}>
+                {/* Message bubble */}
+                <div className={`bubble ${isUser ? "bubble-user" : "bubble-assistant"}`}>
+                  {m.text ? (
+                    <div>{renderInlineMarkdown(m.text, isUser ? undefined : (idx) => handleCitationClick(m.id, idx))}</div>
+                  ) : m.isStreaming && !m.error ? (
+                    <div style={{ display: "flex", gap: "5px", padding: "4px 0", alignItems: "center" }}>
+                      <span style={{ width: "5px", height: "5px", background: "var(--text-2)", borderRadius: "50%" }} className="animate-pulse-slow" />
+                      <span style={{ width: "5px", height: "5px", background: "var(--text-2)", borderRadius: "50%", animationDelay: "0.2s" }} className="animate-pulse-slow" />
+                      <span style={{ width: "5px", height: "5px", background: "var(--text-2)", borderRadius: "50%", animationDelay: "0.4s" }} className="animate-pulse-slow" />
+                    </div>
+                  ) : null}
 
-                {m.aborted && (
-                  <div style={{ display: "flex", alignItems: "center", gap: "6px", color: "var(--text-dim)", fontSize: "0.78rem", marginTop: m.text ? "8px" : "0", fontStyle: "italic" }}>
-                    <Square size={11} />
-                    <span>응답이 중단되었습니다</span>
-                  </div>
-                )}
+                  {m.aborted && (
+                    <div style={{ display: "flex", alignItems: "center", gap: "6px", color: "var(--text-3)", fontSize: "0.76rem", marginTop: m.text ? "8px" : "0", fontStyle: "italic" }}>
+                      <Square size={10} />
+                      <span>응답이 중단되었습니다</span>
+                    </div>
+                  )}
 
-                {m.error && (
-                  <div style={{ display: "flex", alignItems: "center", gap: "6px", color: "#f87171", fontSize: "0.85rem", marginTop: m.text ? "8px" : "0" }}>
-                    <AlertCircle size={14} />
-                    <span>{m.error}</span>
-                  </div>
-                )}
-              </div>
-
-              {/* Query Condensing: 후속 질문이 독립 검색 질의로 재작성된 경우 표시 */}
-              {!isUser && m.condensedQuery && (
-                <div style={{
-                  marginTop: "8px",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "6px",
-                  fontSize: "0.75rem",
-                  color: "var(--text-dim)",
-                  padding: "4px 8px",
-                  background: "rgba(245,158,11,0.06)",
-                  border: "1px solid rgba(245,158,11,0.18)",
-                  borderRadius: "6px",
-                  maxWidth: "100%"
-                }}>
-                  <Search size={12} style={{ color: "#f59e0b", flexShrink: 0 }} />
-                  <span style={{ overflowWrap: "anywhere" }}>
-                    검색 질의 재작성: <span style={{ color: "var(--text-muted)", fontStyle: "italic" }}>{m.condensedQuery}</span>
-                  </span>
-                </div>
-              )}
-
-              {/* RAG References Accordion */}
-              {!isUser && m.references && m.references.length > 0 && (
-                <div style={{ marginTop: "8px", width: "100%" }}>
-                  <button
-                    onClick={() => handleToggleRef(m.id)}
-                    style={{
-                      background: "none",
-                      border: "none",
-                      color: "var(--primary)",
-                      fontSize: "0.8rem",
-                      fontWeight: "500",
-                      cursor: "pointer",
-                      display: "flex",
-                      alignItems: "center",
-                      gap: "6px",
-                      padding: "4px 8px",
-                      borderRadius: "4px",
-                      transition: "background 0.2s"
-                    }}
-                    onMouseEnter={e => e.currentTarget.style.backgroundColor = "rgba(59,130,246,0.05)"}
-                    onMouseLeave={e => e.currentTarget.style.backgroundColor = "transparent"}
-                  >
-                    <BookOpen size={13} />
-                    <span>RAG 참조 출처 ({m.references.length}개)</span>
-                    <span style={{ fontSize: "0.7rem", color: "var(--text-dim)" }}>
-                      {activeRefId === m.id ? "▼ 닫기" : "▶ 열기"}
-                    </span>
-                  </button>
-
-                  {activeRefId === m.id && (
-                    <div style={{
-                      marginTop: "8px",
-                      display: "flex",
-                      flexDirection: "column",
-                      gap: "10px",
-                      paddingLeft: "8px",
-                      borderLeft: "2px solid rgba(59,130,246,0.3)"
-                    }}>
-                      {m.references.map((ref, idx) => {
-                        const refKey = `${m.id}-${idx}`;
-                        const isHighlighted = highlightedRefKey === refKey;
-                        return (
-                        <div
-                          key={ref.chunk_id}
-                          id={`ref-card-${refKey}`}
-                          className="glass-panel"
-                          style={{
-                            padding: "12px",
-                            fontSize: "0.8rem",
-                            background: isHighlighted ? "rgba(59,130,246,0.15)" : "rgba(0, 0, 0, 0.2)",
-                            borderColor: isHighlighted ? "rgba(59,130,246,0.5)" : undefined,
-                            transition: "background 0.3s, border-color 0.3s",
-                          }}
-                        >
-                          <div style={{
-                            display: "flex",
-                            justifyContent: "space-between",
-                            alignItems: "center",
-                            marginBottom: "8px",
-                            borderBottom: "1px solid rgba(255,255,255,0.04)",
-                            paddingBottom: "6px",
-                            color: "var(--text-muted)"
-                          }}>
-                            <span style={{ fontWeight: "600" }}>#{idx + 1} 출처 (Chunk ID: {ref.chunk_id})</span>
-                            <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
-                              <span className={`badge badge-${ref.chunk_type}`}>{ref.chunk_type}</span>
-                              {ref.section_header && (
-                                <span style={{ fontSize: "0.75rem", background: "rgba(255,255,255,0.05)", padding: "1px 6px", borderRadius: "4px" }}>
-                                  {ref.section_header}
-                                </span>
-                              )}
-                              {ref.page_number && (
-                                <span style={{ fontSize: "0.75rem", background: "rgba(59,130,246,0.1)", color: "var(--primary)", padding: "1px 6px", borderRadius: "4px", fontWeight: "600" }}>
-                                  p. {ref.page_number}
-                                </span>
-                              )}
-                              <span style={{ fontSize: "0.75rem", color: "var(--text-dim)" }}>
-                                score {ref.score.toFixed(4)}
-                              </span>
-                            </div>
-                          </div>
-                          <MarkdownTable content={ref.content} />
-                        </div>
-                        );
-                      })}
+                  {m.error && (
+                    <div style={{ display: "flex", alignItems: "center", gap: "6px", color: "var(--red)", fontSize: "0.82rem", marginTop: m.text ? "8px" : "0" }}>
+                      <AlertCircle size={13} />
+                      <span>{m.error}</span>
                     </div>
                   )}
                 </div>
-              )}
-            </div>
-          );
-        })}
+
+                {/* Query Condensing: 후속 질문이 독립 검색 질의로 재작성된 경우 표시 */}
+                {!isUser && m.condensedQuery && (
+                  <div style={{
+                    marginTop: "6px",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "6px",
+                    fontSize: "0.74rem",
+                    color: "var(--text-3)",
+                    padding: "4px 9px",
+                    background: "var(--amber-soft)",
+                    border: "1px solid rgba(232, 163, 61, 0.2)",
+                    borderRadius: "6px",
+                    maxWidth: "100%"
+                  }}>
+                    <Search size={11} style={{ color: "var(--amber)", flexShrink: 0 }} />
+                    <span style={{ overflowWrap: "anywhere" }}>
+                      검색 질의 재작성: <span style={{ color: "var(--text-2)", fontStyle: "italic" }}>{m.condensedQuery}</span>
+                    </span>
+                  </div>
+                )}
+
+                {/* RAG References Accordion */}
+                {!isUser && m.references && m.references.length > 0 && (
+                  <div style={{ marginTop: "6px", width: "100%" }}>
+                    <button
+                      onClick={() => handleToggleRef(m.id)}
+                      style={{
+                        background: "none",
+                        border: "none",
+                        color: "var(--text-2)",
+                        fontSize: "0.78rem",
+                        fontWeight: 500,
+                        cursor: "pointer",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "6px",
+                        padding: "4px 6px",
+                        borderRadius: "5px",
+                      }}
+                    >
+                      <BookOpen size={12} />
+                      <span>참조 출처 {m.references.length}개</span>
+                      <span style={{ fontSize: "0.68rem", color: "var(--text-3)" }}>
+                        {activeRefId === m.id ? "접기" : "펼치기"}
+                      </span>
+                    </button>
+
+                    {activeRefId === m.id && (
+                      <div style={{
+                        marginTop: "8px",
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: "8px",
+                        paddingLeft: "10px",
+                        borderLeft: "2px solid var(--border-strong)"
+                      }}>
+                        {m.references.map((ref, idx) => {
+                          const refKey = `${m.id}-${idx}`;
+                          const isHighlighted = highlightedRefKey === refKey;
+                          return (
+                          <div
+                            key={ref.chunk_id}
+                            id={`ref-card-${refKey}`}
+                            className="card"
+                            style={{
+                              padding: "12px 14px",
+                              fontSize: "0.8rem",
+                              background: isHighlighted ? "var(--accent-soft)" : "var(--surface)",
+                              borderColor: isHighlighted ? "rgba(91,124,250,0.45)" : undefined,
+                              transition: "background 0.3s, border-color 0.3s",
+                            }}
+                          >
+                            <div style={{
+                              display: "flex",
+                              justifyContent: "space-between",
+                              alignItems: "center",
+                              marginBottom: "8px",
+                              borderBottom: "1px solid var(--border)",
+                              paddingBottom: "7px",
+                              color: "var(--text-2)"
+                            }}>
+                              <span style={{ fontWeight: 600 }}>출처 {idx + 1} · 청크 {ref.chunk_id}</span>
+                              <div style={{ display: "flex", gap: "7px", alignItems: "center" }}>
+                                <span className={`badge badge-${ref.chunk_type}`}>{ref.chunk_type === "table" ? "표" : "본문"}</span>
+                                {ref.section_header && (
+                                  <span style={{ fontSize: "0.72rem", background: "var(--surface-3)", padding: "1px 7px", borderRadius: "4px" }}>
+                                    {ref.section_header}
+                                  </span>
+                                )}
+                                {ref.page_number && (
+                                  <span style={{ fontSize: "0.72rem", color: "var(--text-3)" }}>p.{ref.page_number}</span>
+                                )}
+                                <span style={{ fontSize: "0.72rem", color: "var(--text-3)", fontVariantNumeric: "tabular-nums" }}>
+                                  {ref.score.toFixed(4)}
+                                </span>
+                              </div>
+                            </div>
+                            <MarkdownTable content={ref.content} />
+                          </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })
+        )}
         <div ref={chatEndRef} />
       </div>
 
-      {/* Input box form */}
+      {/* Input */}
       <form onSubmit={handleSubmit} style={{
-        padding: "20px",
-        background: "rgba(255,255,255,0.01)",
-        borderTop: "1px solid var(--panel-border)",
+        padding: "16px 32px 22px",
+        borderTop: "1px solid var(--border)",
         display: "flex",
-        gap: "10px"
+        gap: "10px",
+        flexShrink: 0,
       }}>
         <input
           type="text"
           value={input}
           onChange={e => setInput(e.target.value)}
-          placeholder="RAG 검색 및 LLM에게 질문할 내용을 입력하세요... (Enter 송신)"
+          placeholder="문서에 대해 질문을 입력하세요"
           className="input-field"
           style={{ flex: 1 }}
         />
         {isStreaming ? (
-          <button
-            type="button"
-            onClick={handleAbort}
-            className="btn"
-            style={{
-              padding: "0 22px",
-              background: "rgba(239,68,68,0.12)",
-              border: "1px solid rgba(239,68,68,0.45)",
-              color: "#f87171",
-            }}
-          >
-            <Square size={14} />
+          <button type="button" onClick={handleAbort} className="btn btn-stop" style={{ minWidth: "92px" }}>
+            <Square size={13} />
             <span>중단</span>
           </button>
         ) : (
-          <button type="submit" className="btn btn-primary" style={{ padding: "0 22px" }}>
-            <Send size={16} />
+          <button type="submit" className="btn btn-primary" style={{ minWidth: "92px" }}>
+            <Send size={14} />
             <span>전송</span>
           </button>
         )}

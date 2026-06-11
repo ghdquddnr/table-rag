@@ -22,7 +22,7 @@ export default function DocumentView() {
   const [parser, setParser] = useState<"docling" | "markitdown">("docling");
   const [uploadStatus, setUploadStatus] = useState<{ type: "success" | "error"; msg: string } | null>(null);
   const [dragActive, setDragActive] = useState(false);
-  
+
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // setState는 모두 promise 콜백 안에서만 호출 → effect 본문에서 직접 불러도 안전
@@ -92,7 +92,7 @@ export default function DocumentView() {
       const data = await res.json();
       setUploadStatus({
         type: "success",
-        msg: `성공! 파일 '${data.filename}'의 분석 및 인제스트가 백그라운드에서 실행 중입니다.`,
+        msg: `'${data.filename}' 분석이 백그라운드에서 진행 중입니다.`,
       });
       refreshDocuments();
     } catch (e) {
@@ -146,7 +146,7 @@ export default function DocumentView() {
     e.preventDefault();
     e.stopPropagation();
     setDragActive(false);
-    
+
     if (e.dataTransfer.files && e.dataTransfer.files[0]) {
       handleUpload(e.dataTransfer.files[0]);
     }
@@ -159,38 +159,41 @@ export default function DocumentView() {
   };
 
   return (
-    <div className="animate-fade-in" style={{ display: "grid", gridTemplateColumns: "1fr 1.5fr", gap: "24px", height: "100%" }}>
-      {/* Left: Upload area */}
-      <div style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
-        <div className="glass-panel" style={{ padding: "24px" }}>
-          <h3 style={{ fontSize: "1.05rem", fontWeight: "600", marginBottom: "16px" }}>신규 문서 업로드</h3>
-          
+    <div className="view animate-fade-in">
+      <div className="view-header">
+        <h2>문서 관리</h2>
+        <p className="desc">PDF를 업로드하면 파싱 → 표 인지 청킹 → 임베딩 → 적재까지 자동으로 처리됩니다.</p>
+      </div>
+
+      <div className="view-body" style={{ display: "grid", gridTemplateColumns: "minmax(300px, 380px) 1fr", gap: "14px", alignItems: "start" }}>
+        {/* Upload card */}
+        <div className="card card-pad">
+          <div className="card-title">신규 문서 업로드</div>
+
           {/* Parser select */}
-          <div style={{ marginBottom: "16px" }}>
-            <label style={{ display: "block", fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: "6px" }}>
-              문서 분석 파서 선택
-            </label>
-            <div style={{ display: "flex", gap: "10px" }}>
+          <div style={{ marginBottom: "14px" }}>
+            <label className="field-label">파서 선택</label>
+            <div className="seg" style={{ display: "flex" }}>
               <button
+                className={parser === "docling" ? "on" : ""}
                 onClick={() => setParser("docling")}
-                className={`btn ${parser === "docling" ? "btn-primary" : "btn-secondary"}`}
-                style={{ flex: 1, padding: "8px", fontSize: "0.85rem" }}
+                style={{ flex: 1 }}
               >
-                Docling (표 정밀)
+                Docling
               </button>
               <button
+                className={parser === "markitdown" ? "on" : ""}
                 onClick={() => setParser("markitdown")}
-                className={`btn ${parser === "markitdown" ? "btn-primary" : "btn-secondary"}`}
-                style={{ flex: 1, padding: "8px", fontSize: "0.85rem" }}
+                style={{ flex: 1 }}
               >
-                MarkItDown (경량)
+                MarkItDown
               </button>
             </div>
-            <span style={{ display: "block", fontSize: "0.72rem", color: "var(--text-dim)", marginTop: "6px" }}>
-              {parser === "docling" 
-                ? "* AI 기반 TableFormer 모델을 구동하여 표 구조를 온전히 해독합니다." 
-                : "* 가볍고 빠른 추출용 텍스트 변환 파서입니다."}
-            </span>
+            <p style={{ fontSize: "0.74rem", color: "var(--text-3)", marginTop: "6px" }}>
+              {parser === "docling"
+                ? "TableFormer 모델로 표 구조를 보존합니다. 수십 초가 소요됩니다."
+                : "가볍고 빠른 텍스트 추출용 대조군 파서입니다."}
+            </p>
           </div>
 
           {/* Drag & Drop Zone */}
@@ -201,14 +204,13 @@ export default function DocumentView() {
             onDrop={handleDrop}
             onClick={() => fileInputRef.current?.click()}
             style={{
-              border: `2px dashed ${dragActive ? "var(--primary)" : "var(--panel-border)"}`,
-              borderRadius: "8px",
-              padding: "36px 20px",
+              border: `1.5px dashed ${dragActive ? "var(--accent)" : "var(--border-strong)"}`,
+              borderRadius: "var(--radius-sm)",
+              padding: "32px 20px",
               textAlign: "center",
-              background: dragActive ? "rgba(59, 130, 246, 0.05)" : "rgba(255, 255, 255, 0.01)",
+              background: dragActive ? "var(--accent-soft)" : "transparent",
               cursor: "pointer",
-              transition: "all 0.2s",
-              position: "relative",
+              transition: "border-color 0.15s, background 0.15s",
             }}
           >
             <input
@@ -219,24 +221,23 @@ export default function DocumentView() {
               accept=".pdf"
             />
             {isUploading ? (
-              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "12px" }}>
-                <RefreshCw size={36} className="animate-pulse-slow" style={{ color: "var(--primary)" }} />
+              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "10px" }}>
+                <RefreshCw size={26} className="animate-spin" style={{ color: "var(--accent-text)" }} />
                 <div>
-                  <div style={{ fontSize: "0.9rem", fontWeight: "600" }}>문서 분석 및 DB 적재 중...</div>
-                  <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginTop: "4px" }}>
+                  <div style={{ fontSize: "0.86rem", fontWeight: 600 }}>문서 분석 및 적재 중</div>
+                  <div style={{ fontSize: "0.74rem", color: "var(--text-3)", marginTop: "3px" }}>
                     Docling 분석은 수십 초 가량 소요될 수 있습니다.
                   </div>
                 </div>
               </div>
             ) : (
-              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "10px" }}>
-                <Upload size={36} style={{ color: dragActive ? "var(--primary)" : "var(--text-dim)" }} />
-                <div>
-                  <span style={{ color: "var(--primary)", fontWeight: "500" }}>PDF 파일 업로드</span> 또는 드래그
+              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "8px" }}>
+                <Upload size={26} style={{ color: dragActive ? "var(--accent-text)" : "var(--text-3)" }} />
+                <div style={{ fontSize: "0.86rem" }}>
+                  <span style={{ color: "var(--accent-text)", fontWeight: 600 }}>클릭해서 선택</span>
+                  <span style={{ color: "var(--text-2)" }}>하거나 끌어다 놓기</span>
                 </div>
-                <span style={{ fontSize: "0.75rem", color: "var(--text-dim)" }}>
-                  PDF만 지원 (최대 30MB)
-                </span>
+                <span style={{ fontSize: "0.72rem", color: "var(--text-3)" }}>PDF · 최대 30MB</span>
               </div>
             )}
           </div>
@@ -245,98 +246,94 @@ export default function DocumentView() {
           {uploadStatus && (
             <div
               style={{
-                marginTop: "16px",
-                padding: "12px",
-                borderRadius: "8px",
-                fontSize: "0.8rem",
+                marginTop: "12px",
+                padding: "10px 12px",
+                borderRadius: "var(--radius-sm)",
+                fontSize: "0.78rem",
                 display: "flex",
                 gap: "8px",
-                alignItems: "center",
-                background: uploadStatus.type === "success" ? "rgba(16, 185, 129, 0.08)" : "rgba(239, 68, 68, 0.08)",
-                border: `1px solid ${uploadStatus.type === "success" ? "rgba(16, 185, 129, 0.2)" : "rgba(239, 68, 68, 0.2)"}`,
-                color: uploadStatus.type === "success" ? "#34d399" : "#f87171",
+                alignItems: "flex-start",
+                background: uploadStatus.type === "success" ? "var(--green-soft)" : "var(--red-soft)",
+                border: `1px solid ${uploadStatus.type === "success" ? "rgba(61,214,140,0.25)" : "rgba(242,85,90,0.25)"}`,
+                color: uploadStatus.type === "success" ? "var(--green)" : "var(--red)",
               }}
             >
-              {uploadStatus.type === "success" ? <CheckCircle2 size={16} /> : <AlertCircle size={16} />}
+              {uploadStatus.type === "success" ? <CheckCircle2 size={14} style={{ flexShrink: 0, marginTop: "1px" }} /> : <AlertCircle size={14} style={{ flexShrink: 0, marginTop: "1px" }} />}
               <span style={{ wordBreak: "break-all" }}>{uploadStatus.msg}</span>
             </div>
           )}
         </div>
-      </div>
 
-      {/* Right: Documents List */}
-      <div className="glass-panel" style={{ padding: "24px", display: "flex", flexDirection: "column", overflow: "hidden" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
-          <h3 style={{ fontSize: "1.05rem", fontWeight: "600" }}>인제스트 문서 라이브러리</h3>
-          <button 
-            onClick={refreshDocuments}
-            disabled={isFetching}
-            className="btn btn-secondary" 
-            style={{ padding: "6px 10px", fontSize: "0.75rem" }}
-          >
-            <RefreshCw size={12} className={isFetching ? "animate-pulse-slow" : ""} />
-            새로고침
-          </button>
-        </div>
+        {/* Documents List */}
+        <div className="card">
+          <div className="card-title" style={{ padding: "16px 20px 0", marginBottom: "10px" }}>
+            문서 라이브러리
+            <button
+              onClick={refreshDocuments}
+              disabled={isFetching}
+              className="btn btn-ghost"
+              style={{ marginLeft: "auto", padding: "4px 10px", fontSize: "0.74rem" }}
+            >
+              <RefreshCw size={11} className={isFetching ? "animate-spin" : ""} />
+              새로고침
+            </button>
+          </div>
 
-        <div style={{ flex: 1, overflowY: "auto", border: "1px solid var(--panel-border)", borderRadius: "8px", background: "rgba(0,0,0,0.1)" }}>
           {documents.length === 0 ? (
-            <div style={{ textAlign: "center", padding: "40px 20px", color: "var(--text-dim)" }}>
-              <FileText size={40} style={{ opacity: 0.3, marginBottom: "10px" }} />
-              <div style={{ fontSize: "0.85rem" }}>적재된 문서가 없습니다. PDF를 업로드해 주세요.</div>
+            <div style={{ textAlign: "center", padding: "44px 20px", color: "var(--text-3)" }}>
+              <FileText size={32} style={{ opacity: 0.4, marginBottom: "10px" }} />
+              <div style={{ fontSize: "0.84rem" }}>적재된 문서가 없습니다. PDF를 업로드해 주세요.</div>
             </div>
           ) : (
-            <div style={{ display: "flex", flexDirection: "column" }}>
-              {documents.map((doc, index) => (
-                <div
-                  key={doc.id}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                    padding: "14px 16px",
-                    borderBottom: index === documents.length - 1 ? "none" : "1px solid var(--panel-border)",
-                    transition: "background 0.2s",
-                  }}
-                  onMouseEnter={e => e.currentTarget.style.backgroundColor = "rgba(255,255,255,0.01)"}
-                  onMouseLeave={e => e.currentTarget.style.backgroundColor = "transparent"}
-                >
-                  <div style={{ display: "flex", gap: "12px", alignItems: "center", flex: 1, minWidth: 0 }}>
-                    <FileText size={20} style={{ color: "var(--primary)", flexShrink: 0 }} />
-                    <div style={{ minWidth: 0, flex: 1 }}>
-                      <div style={{ fontSize: "0.85rem", fontWeight: "500", color: "var(--text-main)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        {doc.filename}
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>파일명</th>
+                  <th>파서</th>
+                  <th style={{ textAlign: "right" }}>청크</th>
+                  <th>상태</th>
+                  <th>업로드일</th>
+                  <th style={{ width: "44px" }}></th>
+                </tr>
+              </thead>
+              <tbody>
+                {documents.map(doc => (
+                  <tr key={doc.id}>
+                    <td style={{ maxWidth: "280px" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px", minWidth: 0 }}>
+                        <FileText size={14} style={{ color: "var(--text-3)", flexShrink: 0 }} />
+                        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {doc.filename}
+                        </span>
                       </div>
-                      <div style={{ display: "flex", gap: "10px", fontSize: "0.75rem", color: "var(--text-dim)", marginTop: "4px", alignItems: "center" }}>
-                        <span>파서: <strong style={{ color: "var(--text-muted)" }}>{doc.parser}</strong></span>
-                        <span>•</span>
-                        {doc.status === "completed" ? (
-                          <span>청크: <strong style={{ color: "var(--accent)" }}>{doc.chunk_count}개</strong></span>
-                        ) : doc.status === "processing" ? (
-                          <span style={{ color: "var(--primary)", display: "flex", alignItems: "center", gap: "4px" }}>
-                            <RefreshCw size={10} className="animate-spin" /> 분석 중...
-                          </span>
-                        ) : doc.status === "failed" ? (
-                          <span style={{ color: "#f87171" }}>분석 실패</span>
-                        ) : (
-                          <span>대기 중</span>
-                        )}
-                        <span>•</span>
-                        <span>업로드: {new Date(doc.created_at).toLocaleDateString()}</span>
-                      </div>
-                    </div>
-                  </div>
-
-                  <button
-                    onClick={() => handleDelete(doc.id)}
-                    className="btn btn-danger"
-                    style={{ padding: "8px", borderRadius: "6px", flexShrink: 0, marginLeft: "12px" }}
-                  >
-                    <Trash2 size={14} />
-                  </button>
-                </div>
-              ))}
-            </div>
+                    </td>
+                    <td style={{ color: "var(--text-2)" }}>{doc.parser}</td>
+                    <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
+                      {doc.status === "completed" ? doc.chunk_count.toLocaleString() : "–"}
+                    </td>
+                    <td>
+                      {doc.status === "completed" ? (
+                        <span className="badge badge-text">완료</span>
+                      ) : doc.status === "processing" ? (
+                        <span className="badge" style={{ background: "var(--amber-soft)", color: "var(--amber)", display: "inline-flex", gap: "5px" }}>
+                          <RefreshCw size={9} className="animate-spin" /> 분석 중
+                        </span>
+                      ) : doc.status === "failed" ? (
+                        <span className="badge" style={{ background: "var(--red-soft)", color: "var(--red)" }}>실패</span>
+                      ) : (
+                        <span className="badge" style={{ background: "var(--surface-3)", color: "var(--text-2)" }}>대기</span>
+                      )}
+                    </td>
+                    <td style={{ color: "var(--text-2)" }}>{new Date(doc.created_at).toLocaleDateString("ko-KR")}</td>
+                    <td>
+                      <button onClick={() => handleDelete(doc.id)} className="btn btn-danger" style={{ padding: "5px 7px" }} title="문서 삭제">
+                        <Trash2 size={13} />
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           )}
         </div>
       </div>

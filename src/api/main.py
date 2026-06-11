@@ -161,6 +161,30 @@ def search(req: SearchRequest) -> SearchResponse:
     )
 
 
+# ── 대시보드 통계 API ────────────────────────────────────────────────────────
+@app.get("/api/stats", summary="대시보드 통계 (문서·청크 집계)")
+def get_stats() -> dict:
+    try:
+        with app.state.pool.connection() as conn:
+            row = conn.execute(
+                """
+                SELECT
+                  (SELECT COUNT(*) FROM documents WHERE status = 'completed'),
+                  (SELECT COUNT(*) FROM documents WHERE status = 'failed'),
+                  (SELECT COUNT(*) FROM chunks),
+                  (SELECT COUNT(*) FROM chunks WHERE chunk_type = 'table')
+                """
+            ).fetchone()
+        return {
+            "documents_completed": row[0],
+            "documents_failed": row[1],
+            "chunks_total": row[2],
+            "chunks_table": row[3],
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"통계 조회 실패: {str(e)}")
+
+
 # ── LLM 연동 설정 API (localStorage → DB 이관) ──────────────────────────────
 _LLM_SETTINGS_KEY = "llm_config"
 

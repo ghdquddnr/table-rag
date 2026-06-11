@@ -89,6 +89,13 @@ class SearchResponse(BaseModel):
     hits: list[SearchHit]
 
 
+class LLMSettings(BaseModel):
+    provider: str = Field("ollama", description="'ollama' | 'openai' | 'gemini'")
+    model: str = "gemma4:12b"
+    api_url: str = ""
+    api_key: str = ""
+
+
 class ChatRequest(BaseModel):
     query: str
     history: list[dict] = Field([], description="대화 히스토리 (멀티턴)")
@@ -152,6 +159,41 @@ def search(req: SearchRequest) -> SearchResponse:
             for r in results
         ],
     )
+
+
+# ── LLM 연동 설정 API (localStorage → DB 이관) ──────────────────────────────
+_LLM_SETTINGS_KEY = "llm_config"
+
+
+@app.get("/api/settings/llm", summary="LLM 연동 설정 조회")
+def get_llm_settings() -> LLMSettings | None:
+    """저장된 LLM 연동 설정을 반환한다. 저장된 적이 없으면 null."""
+    try:
+        with app.state.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT value FROM app_settings WHERE key = %s", (_LLM_SETTINGS_KEY,)
+            ).fetchone()
+        return LLMSettings(**row[0]) if row else None
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"설정 조회 실패: {str(e)}")
+
+
+@app.put("/api/settings/llm", summary="LLM 연동 설정 저장")
+def put_llm_settings(cfg: LLMSettings) -> dict:
+    """LLM 연동 설정을 DB에 upsert 한다."""
+    try:
+        with app.state.pool.connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO app_settings (key, value) VALUES (%s, %s::jsonb)
+                ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()
+                """,
+                (_LLM_SETTINGS_KEY, json.dumps(cfg.model_dump())),
+            )
+            conn.commit()
+        return {"status": "ok"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"설정 저장 실패: {str(e)}")
 
 
 # ── Phase 5 문서 관리 API ───────────────────────────────────────────────────

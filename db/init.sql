@@ -32,6 +32,13 @@ CREATE TABLE IF NOT EXISTS chunks (
     created_at     TIMESTAMPTZ DEFAULT now()
 );
 
+-- 앱 설정 키-값 저장소 (LLM 연동 설정 등)
+CREATE TABLE IF NOT EXISTS app_settings (
+    key        TEXT PRIMARY KEY,
+    value      JSONB NOT NULL,
+    updated_at TIMESTAMPTZ DEFAULT now()
+);
+
 -- HNSW index for dense cosine search
 CREATE INDEX IF NOT EXISTS chunks_embedding_idx
     ON chunks USING hnsw (embedding vector_cosine_ops);

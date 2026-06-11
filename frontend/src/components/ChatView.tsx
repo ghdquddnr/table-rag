@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useRef } from "react";
 import { Send, BookOpen, AlertCircle, Layers, Search, Square } from "lucide-react";
-import { LLMConfig, DEFAULT_CONFIG } from "./SettingsView";
+import { LLMConfig, DEFAULT_CONFIG, fetchLLMConfig } from "./SettingsView";
 import MarkdownTable from "./MarkdownTable";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
@@ -109,24 +109,16 @@ export default function ChatView() {
   const abortRef = useRef<AbortController | null>(null);
   const isStreaming = messages.some(m => m.isStreaming);
 
-  // Load config on mount + localStorage 변경 시 재동기화
+  // 마운트 시 DB에 저장된 설정 로드 + SettingsView 저장 시 발행되는 이벤트로 재동기화
   useEffect(() => {
-    const loadConfig = () => {
-      const saved = localStorage.getItem("table_rag_llm_config");
-      if (saved) {
-        try {
-          setConfig(JSON.parse(saved));
-        } catch (e) {
-          console.error("Failed to parse config in ChatView", e);
-        }
-      }
+    fetchLLMConfig().then(setConfig);
+
+    const onConfigUpdated = (e: Event) => {
+      const detail = (e as CustomEvent<LLMConfig>).detail;
+      if (detail) setConfig(detail);
     };
-
-    loadConfig();
-
-    // SettingsView에서 저장 시 발생하는 storage 이벤트 수신
-    window.addEventListener("storage", loadConfig);
-    return () => window.removeEventListener("storage", loadConfig);
+    window.addEventListener("llm-config-updated", onConfigUpdated);
+    return () => window.removeEventListener("llm-config-updated", onConfigUpdated);
   }, []);
 
   // Auto scroll to bottom

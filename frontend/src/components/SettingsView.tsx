@@ -21,26 +21,40 @@ interface OllamaTag {
   name: string;
 }
 
-// 저장된 설정을 읽어 초기값으로 사용 (SSR 프리렌더 시에는 localStorage가 없으므로 기본값)
-function loadSavedConfig(): LLMConfig {
-  if (typeof window === "undefined") return DEFAULT_CONFIG;
-  const saved = localStorage.getItem("table_rag_llm_config");
-  if (saved) {
-    try {
-      return { ...DEFAULT_CONFIG, ...JSON.parse(saved) };
-    } catch (e) {
-      console.error("Failed to parse saved LLM config", e);
-    }
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
+
+// 백엔드에 저장된 LLM 설정 조회 (snake_case API ↔ camelCase 프런트 매핑).
+// 저장된 적이 없거나 백엔드가 꺼져 있으면 기본값을 반환한다.
+export async function fetchLLMConfig(): Promise<LLMConfig> {
+  try {
+    const res = await fetch(`${API_BASE}/api/settings/llm`);
+    if (!res.ok) return DEFAULT_CONFIG;
+    const data = await res.json();
+    if (!data) return DEFAULT_CONFIG;
+    return {
+      ...DEFAULT_CONFIG,
+      provider: data.provider,
+      model: data.model,
+      apiUrl: data.api_url,
+      apiKey: data.api_key,
+    };
+  } catch {
+    return DEFAULT_CONFIG;
   }
-  return DEFAULT_CONFIG;
 }
 
 export default function SettingsView() {
-  const [config, setConfig] = useState<LLMConfig>(loadSavedConfig);
+  const [config, setConfig] = useState<LLMConfig>(DEFAULT_CONFIG);
   const [ollamaModels, setOllamaModels] = useState<string[]>([]);
   const [isLoadingModels, setIsLoadingModels] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [connError, setConnError] = useState<string | null>(null);
+
+  // 마운트 시 DB에 저장된 설정 로드
+  useEffect(() => {
+    fetchLLMConfig().then(setConfig);
+  }, []);
 
   // Fetch Ollama models when provider or apiUrl changes
   useEffect(() => {
@@ -79,13 +93,30 @@ export default function SettingsView() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [config.provider, config.apiUrl]);
 
-  const handleSave = () => {
-    localStorage.setItem("table_rag_llm_config", JSON.stringify(config));
-    // 같은 탭의 ChatView에도 변경을 알리기 위해 커스텀 이벤트 dispatch
-    // (window.storage 이벤트는 다른 탭에서만 발생하므로 직접 발행 필요)
-    window.dispatchEvent(new Event("storage"));
-    setSaveSuccess(true);
-    setTimeout(() => setSaveSuccess(false), 2000);
+  const handleSave = async () => {
+    setSaveError(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/settings/llm`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          provider: config.provider,
+          model: config.model,
+          api_url: config.apiUrl,
+          api_key: config.apiKey,
+        }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        throw new Error(data?.detail || `저장 실패 (HTTP ${res.status})`);
+      }
+      // 같은 탭의 ChatView에 변경을 즉시 반영하기 위한 커스텀 이벤트
+      window.dispatchEvent(new CustomEvent<LLMConfig>("llm-config-updated", { detail: config }));
+      setSaveSuccess(true);
+      setTimeout(() => setSaveSuccess(false), 2000);
+    } catch (e) {
+      setSaveError(e instanceof Error ? e.message : "설정 저장에 실패했습니다.");
+    }
   };
 
   const updateField = (field: keyof LLMConfig, value: string) => {
@@ -219,7 +250,13 @@ export default function SettingsView() {
           )}
         </div>
 
-        <div style={{ marginTop: "10px", display: "flex", justifyContent: "flex-end" }}>
+        <div style={{ marginTop: "10px", display: "flex", justifyContent: "flex-end", alignItems: "center", gap: "12px" }}>
+          {saveError && (
+            <div style={{ display: "flex", alignItems: "center", gap: "6px", color: "#f87171", fontSize: "0.8rem" }}>
+              <AlertTriangle size={13} />
+              <span>{saveError}</span>
+            </div>
+          )}
           <button onClick={handleSave} className="btn btn-primary" style={{ minWidth: "140px" }}>
             {saveSuccess ? (
               <>

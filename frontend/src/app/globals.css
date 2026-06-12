@@ -566,23 +566,6 @@ button {
   background: rgba(91, 124, 250, 0.25);
 }
 
-.suggest-chip {
-  padding: 9px 14px;
-  border-radius: 20px;
-  border: 1px solid var(--border-strong);
-  background: transparent;
-  color: var(--text-2);
-  font-size: 0.82rem;
-  cursor: pointer;
-  transition: background 0.12s, color 0.12s, border-color 0.12s;
-}
-
-.suggest-chip:hover {
-  background: var(--surface-2);
-  color: var(--text-1);
-  border-color: var(--accent);
-}
-
 /* ── 벤치마크 바 ───────────────────────────────────────────── */
 .bench-row {
   margin-bottom: 14px;

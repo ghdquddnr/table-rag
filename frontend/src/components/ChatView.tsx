@@ -27,13 +27,6 @@ interface Message {
   condensedQuery?: string | null; // 멀티턴 후속 질문이 독립 질의로 재작성된 경우
 }
 
-// 빈 채팅 상태에서 보여줄 예시 질문 (골든셋 기반)
-const SUGGESTED_QUESTIONS = [
-  "부채비율 44.3%를 기록한 시점의 자산총계는?",
-  "영업이익이 37억원인 분기의 IT 부문 매출은?",
-  "수주잔고가 0.70조원인 분기 다음 분기 수주잔고는?",
-];
-
 // **bold**, *italic*, [출처N] 패턴을 처리하는 인라인 마크다운 렌더러
 function renderInlineMarkdown(
   text: string,
@@ -314,13 +307,6 @@ export default function ChatView() {
             <p style={{ fontSize: "0.82rem", color: "var(--text-2)", maxWidth: "380px", textAlign: "center" }}>
               업로드한 PDF에서 하이브리드 검색으로 근거를 찾아 출처와 함께 답변합니다.
             </p>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: "8px", justifyContent: "center", marginTop: "14px", maxWidth: "560px" }}>
-              {SUGGESTED_QUESTIONS.map(q => (
-                <button key={q} className="suggest-chip" onClick={() => sendQuery(q)}>
-                  {q}
-                </button>
-              ))}
-            </div>
           </div>
         ) : (
           messages.map((m) => {
